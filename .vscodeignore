@@ -1,0 +1,16 @@
+.agent/**
+.serena/**
+.vscode/**
+docs/**
+src/**
+test/**
+node_modules/**
+out/test/**
+**/*.map
+AGENTS.md
+CODEX.md
+CLAUDE.md
+.gitignore
+*.vsix
+tsconfig.json
+package-lock.json

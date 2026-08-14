@@ -1,0 +1,96 @@
+export type LiveStatus = 'live' | 'offline' | 'unknown';
+
+export interface LiveRoomStatus {
+  roomId: string;
+  shortRoomId?: string;
+  title: string;
+  anchorName: string;
+  fansCount: number | null;
+  cover?: string;
+  status: LiveStatus;
+  online: number | null;
+  popularity: number | null;
+  guardFleet: GuardFleet | null;
+  liveStartTime: number | null;
+  liveDurationText: string;
+  lastUpdatedAt: number;
+  error?: string;
+}
+
+export interface GuardFleet {
+  total: number;
+}
+
+export interface LiveAnchorSearchResult {
+  roomId: string;
+  uid: string;
+  uname: string;
+  face?: string;
+  category?: string;
+  fansCount: number;
+  isLive: boolean;
+}
+
+export interface RoomSearchResult {
+  roomId: string;
+  title: string;
+  subtitle: string;
+  detail: string;
+  isLive: boolean;
+  monitored: boolean;
+  source: 'roomId' | 'anchor';
+  face?: string;
+}
+
+export interface MonitorSettings {
+  rooms: string[];
+  groups: RoomGroup[];
+  autoRefreshEnabled: boolean;
+  autoRefreshIntervalSeconds: number;
+  liveStartNotificationsEnabled: boolean;
+}
+
+export type NetworkProxyMode = 'auto' | 'manual' | 'off';
+
+export interface NetworkProxySettings {
+  mode: NetworkProxyMode;
+  url: string;
+}
+
+export interface RoomGroup {
+  id: string;
+  name: string;
+  rooms: string[];
+}
+
+export type OnlineViewerHistoryPoint = [timestampMs: number, online: number | null];
+
+export type OnlineViewerHistory = Record<string, OnlineViewerHistoryPoint[]>;
+
+export interface HistoryDateSummary {
+  date: string;
+  roomIds: string[];
+  pointCount: number;
+}
+
+export interface HistoryRoomSeries {
+  roomId: string;
+  anchorName: string;
+  points: OnlineViewerHistoryPoint[];
+}
+
+export interface HistoryQueryResult {
+  date: string;
+  startMs: number;
+  endMs: number;
+  rooms: HistoryRoomSeries[];
+}
+
+export interface MonitorSnapshot {
+  rooms: LiveRoomStatus[];
+  settings: MonitorSettings;
+  loading: boolean;
+  lastRefreshAt: number | null;
+  onlineHistory: OnlineViewerHistory;
+  message?: string;
+}

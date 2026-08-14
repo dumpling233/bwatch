@@ -1,0 +1,148 @@
+{
+  "name": "bwatch",
+  "displayName": "BWatch",
+  "description": "VSCode sidebar monitor for multiple Bilibili live rooms.",
+  "version": "0.1.0",
+  "publisher": "dumpling",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:bwatch.liveMonitor"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bwatch",
+          "title": "BWatch",
+          "icon": "media/bwatch.svg"
+        }
+      ]
+    },
+    "views": {
+      "bwatch": [
+        {
+          "id": "bwatch.liveMonitor",
+          "name": "Bilibili Live Monitor",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "bwatch.refresh",
+        "title": "BWatch: Refresh Live Rooms",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "bwatch.addRoom",
+        "title": "BWatch: Add Live Room",
+        "icon": "$(add)"
+      },
+      {
+        "command": "bwatch.removeRoom",
+        "title": "BWatch: Remove Live Room",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bwatch.openRoom",
+        "title": "BWatch: Open Live Room",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "bwatch.diagnoseNetwork",
+        "title": "BWatch: Diagnose Network",
+        "icon": "$(debug-disconnect)"
+      }
+    ],
+    "configuration": {
+      "title": "BWatch",
+      "properties": {
+        "bwatch.rooms": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Bilibili live room IDs to monitor."
+        },
+        "bwatch.groups": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "rooms"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "rooms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "description": "Custom BWatch room groups. Managed from the BWatch sidebar."
+        },
+        "bwatch.autoRefresh.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic refresh for live room status."
+        },
+        "bwatch.autoRefresh.intervalSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 15,
+          "description": "Automatic refresh interval in seconds. Values below 15 are clamped to 15."
+        },
+        "bwatch.notifications.liveStart.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a VSCode notification when a room starts streaming."
+        },
+        "bwatch.network.proxy.mode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "manual",
+            "off"
+          ],
+          "description": "Proxy mode for BWatch Bilibili API requests. auto uses VSCode http.proxy first, then HTTP_PROXY/HTTPS_PROXY; manual uses bwatch.network.proxy.url; off disables proxy."
+        },
+        "bwatch.network.proxy.url": {
+          "type": "string",
+          "default": "",
+          "description": "HTTP/HTTPS proxy URL used when bwatch.network.proxy.mode is manual, for example http://127.0.0.1:7890. SOCKS proxies are not supported."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run compile && node --test out/test/**/*.test.js",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.93.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.5.0"
+  }
+}
