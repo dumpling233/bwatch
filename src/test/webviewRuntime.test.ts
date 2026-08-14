@@ -144,6 +144,28 @@ test('aggregate trend labels include live and total room counts for their own sc
   assert.match(extractFunction(source, 'buildAggregateSeries', 'getAggregateSeriesLabel'), /getAggregateSeriesLabel/);
 });
 
+test('aggregate trend sums historical points when a group member was added later', () => {
+  const source = readWebviewSource();
+  const context = vm.createContext({});
+  vm.runInContext(extractFunction(source, 'sumSeriesPoints', 'getScopeLabel'), context);
+  const sum = vm.runInContext('sumSeriesPoints', context) as (
+    roomSeries: Array<{ points: Array<[number, number | null]> }>
+  ) => Array<[number, number | null]>;
+
+  assert.deepEqual(JSON.parse(JSON.stringify(sum([
+    { points: [[100, 10], [200, 20], [300, null]] },
+    { points: [[200, 5], [300, 7]] }
+  ]))), [
+    [100, 10],
+    [200, 25],
+    [300, null]
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sum([
+    { points: [[100, null]] },
+    { points: [] }
+  ]))), [[100, null]]);
+});
+
 test('trend scope labels include live and actual filtered room counts', () => {
   const source = readWebviewSource();
   const context = vm.createContext({});

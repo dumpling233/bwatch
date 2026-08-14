@@ -1418,10 +1418,16 @@
       .sort((left, right) => left - right)
       .map((timestamp) => {
         const values = pointMaps.map((points) => points.get(timestamp));
-        if (values.some((value) => typeof value !== 'number')) {
+        // A missing point means the room had not entered monitoring yet; it contributes zero.
+        // An explicit null still means the room was sampled but unavailable, so keep the gap.
+        if (values.some((value) => value === null)) {
           return [timestamp, null];
         }
-        return [timestamp, values.reduce((total, value) => total + value, 0)];
+        const numericValues = values.filter((value) => typeof value === 'number');
+        if (numericValues.length === 0) {
+          return [timestamp, null];
+        }
+        return [timestamp, numericValues.reduce((total, value) => total + value, 0)];
       });
   }
 
