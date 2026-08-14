@@ -138,6 +138,91 @@ test('BilibiliLiveClient fetches guard fleet total', async () => {
   });
 });
 
+test('BilibiliLiveClient limits enrichment concurrency and caches slow fields', async () => {
+  let activeEnrichmentRequests = 0;
+  let maxActiveEnrichmentRequests = 0;
+  let baseInfoRequests = 0;
+  let guardRequests = 0;
+  let fansRequests = 0;
+  const byRoomIds = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [String(index + 1), {
+    uid: 100 + index,
+    room_id: index + 1,
+    title: `房间${index + 1}`,
+    uname: `主播${index + 1}`,
+    live_status: 0,
+    online: 0,
+    live_time: 0
+  }]));
+  const client = new BilibiliLiveClient(async (input) => {
+    const url = String(input);
+    if (url.includes('getRoomBaseInfo')) {
+      baseInfoRequests += 1;
+      return baseInfoResponse(byRoomIds);
+    }
+
+    const isEnrichmentRequest = url.includes('guardTab') || url.includes('relation/stat');
+    if (isEnrichmentRequest) {
+      activeEnrichmentRequests += 1;
+      maxActiveEnrichmentRequests = Math.max(maxActiveEnrichmentRequests, activeEnrichmentRequests);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      activeEnrichmentRequests -= 1;
+    }
+
+    if (url.includes('guardTab')) {
+      guardRequests += 1;
+      return guardResponse(10);
+    }
+
+    fansRequests += 1;
+    return relationStatResponse(20);
+  });
+
+  await client.fetchRooms(Object.keys(byRoomIds), 1000);
+  await client.fetchRooms(Object.keys(byRoomIds), 2000);
+
+  assert.ok(maxActiveEnrichmentRequests <= 12);
+  assert.equal(baseInfoRequests, 1);
+  assert.equal(guardRequests, 8);
+  assert.equal(fansRequests, 8);
+});
+
+test('BilibiliLiveClient marks cached fans and guard values stale after refresh failure', async () => {
+  let supplementsAvailable = true;
+  const client = new BilibiliLiveClient(async (input) => {
+    const url = String(input);
+    if (url.includes('guardTab')) {
+      return supplementsAvailable ? guardResponse(106) : httpErrorResponse(503);
+    }
+    if (url.includes('relation/stat')) {
+      return supplementsAvailable ? relationStatResponse(72) : httpErrorResponse(503);
+    }
+    return baseInfoResponse({
+      '1': {
+        uid: 100,
+        room_id: 1,
+        title: 'A',
+        uname: '主播A',
+        live_status: 0,
+        online: 0,
+        live_time: 0
+      }
+    });
+  });
+
+  const firstRooms = await client.fetchRooms(['1'], 1_000);
+  supplementsAvailable = false;
+  const secondRooms = await client.fetchRooms(['1'], 5 * 60 * 1000 + 2_000);
+
+  assert.equal(firstRooms[0].fansCount, 72);
+  assert.equal(firstRooms[0].guardFleet?.total, 106);
+  assert.equal(secondRooms[0].fansCount, 72);
+  assert.equal(secondRooms[0].guardFleet?.total, 106);
+  assert.equal(secondRooms[0].fansCountStale, true);
+  assert.equal(secondRooms[0].guardFleetStale, true);
+  assert.equal(secondRooms[0].fansCountLastSuccessAt, 1_000);
+  assert.equal(secondRooms[0].guardFleetLastSuccessAt, 1_000);
+});
+
 test('BilibiliLiveClient keeps room status when fans count request fails', async () => {
   const client = new BilibiliLiveClient(async (input) => {
     const url = String(input);
@@ -206,6 +291,48 @@ test('BilibiliLiveClient keeps live online count null when online rank fails', a
   assert.equal(rooms[0].status, 'live');
   assert.equal(rooms[0].online, null);
   assert.equal(rooms[0].popularity, 73689);
+});
+
+test('BilibiliLiveClient caches online counts by the configured interval and marks failed refreshes stale', async () => {
+  let onlineAvailable = true;
+  let onlineRequests = 0;
+  const client = new BilibiliLiveClient(async (input) => {
+    const url = String(input);
+    if (url.includes('getOnlineGoldRank')) {
+      onlineRequests += 1;
+      return onlineAvailable ? jsonResponse({ code: 0, data: { onlineNum: 500 } }) : httpErrorResponse(503);
+    }
+    if (url.includes('guardTab')) {
+      return guardResponse(10);
+    }
+    if (url.includes('relation/stat')) {
+      return relationStatResponse(20);
+    }
+    return baseInfoResponse({
+      '1': {
+        uid: 100,
+        room_id: 1,
+        title: 'A',
+        uname: '涓绘挱A',
+        live_status: 1,
+        online: 999,
+        live_time: 100
+      }
+    });
+  });
+
+  const firstRooms = await client.fetchRooms(['1'], 1_000);
+  const cachedRooms = await client.fetchRooms(['1'], 5_000);
+  onlineAvailable = false;
+  const staleRooms = await client.fetchRooms(['1'], 17_000);
+
+  assert.equal(firstRooms[0].online, 500);
+  assert.equal(cachedRooms[0].online, 500);
+  assert.equal(cachedRooms[0].onlineStale, false);
+  assert.equal(staleRooms[0].online, 500);
+  assert.equal(staleRooms[0].onlineStale, true);
+  assert.equal(staleRooms[0].onlineLastSuccessAt, 1_000);
+  assert.equal(onlineRequests, 2);
 });
 
 test('BilibiliLiveClient formats fetch failures for room status', async () => {

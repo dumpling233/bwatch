@@ -25,7 +25,7 @@ AI 在进行非平凡代码变更前必须先使用 `$prd-keeper`，阅读本文
 - 应用入口：VSCode 扩展激活事件 `onView:bwatch.liveMonitor`。
 - UI 入口：Activity Bar 容器 `bwatch` 下的 Webview View `bwatch.liveMonitor`。
 - 命令入口：`bwatch.refresh`、`bwatch.addRoom`、`bwatch.removeRoom`、`bwatch.openRoom`、`bwatch.diagnoseNetwork`。
-- 配置入口：VSCode 设置 `bwatch.rooms`、`bwatch.groups`、`bwatch.autoRefresh.enabled`、`bwatch.autoRefresh.intervalSeconds`、`bwatch.notifications.liveStart.enabled`、`bwatch.network.proxy.mode`、`bwatch.network.proxy.url`。
+- 配置入口：VSCode 设置 `bwatch.rooms`、`bwatch.groups`、`bwatch.autoRefresh.enabled`、`bwatch.autoRefresh.intervalSeconds`、`bwatch.dataRefresh.baseInfoIntervalSeconds`、`bwatch.dataRefresh.onlineIntervalSeconds`、`bwatch.dataRefresh.fansIntervalSeconds`、`bwatch.dataRefresh.guardIntervalSeconds`、`bwatch.notifications.liveStart.enabled`、`bwatch.network.proxy.mode`、`bwatch.network.proxy.url`。
 - API 入口：扩展内部通过 B站直播房间批量信息接口拉取直播间状态。
 
 ## 模块索引

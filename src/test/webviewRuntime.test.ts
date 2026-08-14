@@ -270,6 +270,11 @@ test('room list operations share one subpanel and advanced controls stay inside 
   assert.ok(panelSource.indexOf('id="summary"') < panelSource.indexOf('id="rooms"'));
   assert.match(panelSource, /id="create-group-button"[\s\S]*id="control-panel-toggle"/);
   assert.match(panelSource, /id="control-panel-toggle"[\s\S]*aria-controls="control-panel"/);
+  assert.ok(panelSource.indexOf('>刷新</div>') < panelSource.indexOf('>分组</div>'));
+  assert.match(panelSource, /id="base-info-interval-input"/);
+  assert.match(panelSource, /id="online-interval-input"/);
+  assert.match(panelSource, /id="fans-interval-input"/);
+  assert.match(panelSource, /id="guard-interval-input"/);
   assert.doesNotMatch(toolbarSource, /control-panel-toggle/);
   assert.doesNotMatch(toolbarSource, /create-group-button/);
   assert.match(css, /\.toolbar\s*\{[\s\S]*repeat\(2, 28px\)/);
@@ -279,8 +284,27 @@ test('room list operations share one subpanel and advanced controls stay inside 
   assert.match(css, /\.display-controls\s*\{[\s\S]*repeat\(4, minmax\(0, 1fr\)\)/);
   assert.match(css, /\.status-filter\s*\{[\s\S]*grid-column:\s*span 3/);
   assert.match(css, /\.status-filter button\s*\{[\s\S]*height:\s*28px/);
+  assert.match(css, /\.data-refresh-field input\s*\{[\s\S]*width:\s*64px/);
+  assert.match(css, /\.trend-toggle\s*\{[\s\S]*background:\s*transparent/);
+  assert.match(css, /\.trend-toggle\.active[\s\S]*background:\s*var\(--vscode-button-background\)/);
+  assert.match(css, /\.overview-mode-button\s*\{[\s\S]*background:\s*transparent/);
+  assert.match(css, /\.overview-mode-button\.active[\s\S]*background:\s*var\(--vscode-button-background\)/);
   assert.match(css, /\.overview-trend\.collapsed \.aggregate-panel-titlebar\s*\{[\s\S]*border-bottom-color:\s*transparent/);
   assert.match(css, /\.room-list-panel-content\s*\{[\s\S]*padding:/);
+});
+
+test('cached metric state is visually marked and includes the last success time in its tooltip', () => {
+  const source = readWebviewSource();
+  const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
+  const helperSource = extractFunction(source, 'applyCachedMetricState', 'durationValue');
+
+  assert.match(source, /room\.fansCountStale/);
+  assert.match(source, /room\.guardFleetStale/);
+  assert.match(source, /room\.onlineStale/);
+  assert.match(helperSource, /metric-stale/);
+  assert.match(helperSource, /本轮获取失败/);
+  assert.match(helperSource, /lastSuccessAt/);
+  assert.match(css, /\.metric-stale\s*\{[\s\S]*editorWarning-foreground/);
 });
 
 test('all three subpanels share a titlebar and the room list has an independent persisted toggle', () => {
@@ -299,6 +323,11 @@ test('all three subpanels share a titlebar and the room list has an independent 
   assert.match(webviewSource, /roomListExpanded: safeState\.roomListExpanded !== false/);
   assert.match(roomListRenderSource, /updateSubpanelToggle\(roomListPanel, roomListContent, roomListToggle, roomListExpanded/);
   assert.match(webviewSource, /function updateSubpanelToggle\(panel, content, toggle, expanded, label\)/);
+  assert.doesNotMatch(webviewSource, /overviewTrendToggle\.classList\.toggle\('active'/);
+  assert.doesNotMatch(webviewSource, /historyTrendToggle\.classList\.toggle\('active'/);
+  assert.doesNotMatch(webviewSource, /controlPanelToggle\.classList\.toggle\('active'/);
+  assert.doesNotMatch(css, /\.aggregate-panel-toggle\.active/);
+  assert.doesNotMatch(css, /\.control-panel-toggle\.active/);
   assert.match(css, /\.subpanel\s*\{[\s\S]*border:/);
   assert.match(css, /\.subpanel-titlebar\s*\{[\s\S]*grid-template-columns:\s*28px minmax\(0, 1fr\) max-content/);
   assert.match(css, /\.subpanel-toggle,[\s\S]*width:\s*28px[\s\S]*height:\s*28px/);

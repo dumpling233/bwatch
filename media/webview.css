@@ -79,17 +79,22 @@ button:hover {
   line-height: 1;
 }
 
-.icon-button:hover,
-.icon-button.active {
+.icon-button:hover {
   color: var(--vscode-foreground);
   background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 }
 
-.control-panel-toggle.active,
-.mode-toggle.active {
+.mode-toggle.active,
+.trend-toggle.active,
+.status-filter button.active,
+.overview-mode-button.active,
+.aggregate-scope-button.active,
+.history-date-button.active {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
-  background: var(--vscode-button-hoverBackground);
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border-color: var(--vscode-button-background);
 }
 
 .ghost-button {
@@ -253,7 +258,8 @@ button:hover {
 
 .mode-toggle {
   color: var(--vscode-foreground);
-  background: var(--vscode-button-secondaryBackground, transparent);
+  background: transparent;
+  border-color: var(--vscode-button-border, var(--vscode-focusBorder));
 }
 
 .settings-row {
@@ -262,6 +268,21 @@ button:hover {
   align-items: center;
   gap: 8px 10px;
   color: var(--vscode-descriptionForeground);
+}
+
+.data-refresh-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+}
+
+.data-refresh-field {
+  min-width: 0;
+  gap: 4px;
+}
+
+.data-refresh-field input {
+  width: 64px;
 }
 
 .switch,
@@ -279,11 +300,17 @@ button:hover {
 }
 
 .interval-field input {
-  width: 48px;
+  width: 64px;
 }
 
 .interval-field {
   justify-content: flex-start;
+}
+
+@media (max-width: 280px) {
+  .data-refresh-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .sort-filter-controls {
@@ -311,13 +338,12 @@ button:hover {
 .status-filter button {
   height: 28px;
   color: var(--vscode-foreground);
-  background: var(--vscode-button-secondaryBackground, transparent);
+  background: transparent;
+  border-color: var(--vscode-button-border, var(--vscode-focusBorder));
 }
 
 .status-filter button.active {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
-  background: var(--vscode-button-hoverBackground);
+  outline: 0;
 }
 
 .group-controls {
@@ -471,9 +497,13 @@ button:hover {
 }
 
 .trend-toggle.active {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
-  background: var(--vscode-button-hoverBackground);
+  outline: 0;
+}
+
+.trend-toggle {
+  color: var(--vscode-foreground);
+  background: transparent;
+  border-color: var(--vscode-button-border, var(--vscode-focusBorder));
 }
 
 .trend-range-field {
@@ -604,15 +634,14 @@ button:hover {
   overflow: hidden;
   padding: 0 6px;
   color: var(--vscode-foreground);
-  background: var(--vscode-button-secondaryBackground, transparent);
+  background: transparent;
+  border-color: var(--vscode-button-border, var(--vscode-focusBorder));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .overview-mode-button.active {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
-  background: var(--vscode-button-hoverBackground);
+  outline: 0;
 }
 
 .aggregate-scope-button {
@@ -620,7 +649,8 @@ button:hover {
   height: 24px;
   padding: 0;
   color: var(--vscode-descriptionForeground);
-  background: var(--vscode-button-secondaryBackground, transparent);
+  background: transparent;
+  border-color: var(--vscode-button-border, var(--vscode-focusBorder));
   border-style: dashed;
 }
 
@@ -685,16 +715,14 @@ button:hover {
   height: 22px;
   padding: 0 6px;
   color: var(--vscode-foreground);
-  background: var(--vscode-button-secondaryBackground);
+  background: transparent;
   border: 1px solid var(--vscode-panel-border);
   border-radius: 4px;
   font-size: 11px;
 }
 
 .history-date-button.active {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
-  background: var(--vscode-button-hoverBackground);
+  outline: 0;
 }
 
 .history-time-controls {
@@ -1176,6 +1204,10 @@ button:hover {
   white-space: nowrap;
 }
 
+.metric-stale {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
 .title {
   margin-top: 1px;
   overflow: hidden;
@@ -1422,7 +1454,7 @@ button:hover {
   }
 
   .interval-field input {
-    width: 58px;
+    width: 64px;
   }
 
   .room {

@@ -114,7 +114,7 @@ export class LiveMonitor {
     };
     this.emit();
 
-    const rooms = await this.client.fetchRooms(this.settings.rooms);
+    const rooms = await this.client.fetchRooms(this.settings.rooms, Date.now(), this.settings.dataRefresh);
     this.handleLiveStartNotifications(rooms);
     const nowMs = Date.now();
     const onlineHistory = await this.historyRecorder.record(rooms, nowMs);

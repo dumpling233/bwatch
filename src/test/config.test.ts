@@ -7,6 +7,7 @@ import {
   normalizeRoomGroups,
   normalizeRoomIds,
   readMonitorSettings,
+  readDataRefreshSettings,
   readNetworkProxySettings,
   renameRoomGroup,
   reorderRoomGroups
@@ -21,6 +22,27 @@ test('clampAutoRefreshInterval enforces 15 second minimum', () => {
   assert.equal(clampAutoRefreshInterval(15), 15);
   assert.equal(clampAutoRefreshInterval(31.9), 31);
   assert.equal(clampAutoRefreshInterval('bad'), 15);
+});
+
+test('readDataRefreshSettings clamps each data interval independently', () => {
+  const settings = readDataRefreshSettings({
+    get(section, defaultValue) {
+      const values: Record<string, unknown> = {
+        'dataRefresh.baseInfoIntervalSeconds': 5,
+        'dataRefresh.onlineIntervalSeconds': 31.9,
+        'dataRefresh.fansIntervalSeconds': 'bad',
+        'dataRefresh.guardIntervalSeconds': 90
+      };
+      return (section in values ? values[section] : defaultValue) as never;
+    }
+  });
+
+  assert.deepEqual(settings, {
+    baseInfoIntervalSeconds: 15,
+    onlineIntervalSeconds: 31,
+    fansIntervalSeconds: 300,
+    guardIntervalSeconds: 90
+  });
 });
 
 test('normalizeRoomGroups keeps valid unique groups and room IDs', () => {
@@ -59,6 +81,7 @@ test('readMonitorSettings normalizes groups against monitored rooms', () => {
 
   assert.deepEqual(settings.groups, [{ id: 'favorites', name: '常看', rooms: ['100'] }]);
   assert.equal(settings.autoRefreshIntervalSeconds, 15);
+  assert.equal(settings.dataRefresh?.fansIntervalSeconds, 300);
 });
 
 test('reorderRoomGroups moves groups without changing their data', () => {

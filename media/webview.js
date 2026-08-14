@@ -10,6 +10,12 @@
   const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
   const liveStartNotificationsToggle = document.getElementById('live-start-notifications-toggle');
   const intervalInput = document.getElementById('interval-input');
+  const dataRefreshInputs = {
+    baseInfoIntervalSeconds: document.getElementById('base-info-interval-input'),
+    onlineIntervalSeconds: document.getElementById('online-interval-input'),
+    fansIntervalSeconds: document.getElementById('fans-interval-input'),
+    guardIntervalSeconds: document.getElementById('guard-interval-input')
+  };
   const sortFieldSelect = document.getElementById('sort-field-select');
   const sortDirectionToggle = document.getElementById('sort-direction-toggle');
   const filterAllButton = document.getElementById('filter-all-button');
@@ -34,6 +40,12 @@
   const TREND_WINDOW_MIN_MINUTES = 1;
   const TREND_WINDOW_MAX_MINUTES = 6 * 60;
   const TREND_WINDOW_DEFAULT_MINUTES = TREND_WINDOW_MIN_MINUTES;
+  const DATA_REFRESH_DEFAULTS = {
+    baseInfoIntervalSeconds: 15,
+    onlineIntervalSeconds: 15,
+    fansIntervalSeconds: 300,
+    guardIntervalSeconds: 60
+  };
   const TREND_CHART_MIN_WIDTH = 360;
   const TREND_CHART_HEIGHT = 86;
   const OVERVIEW_CHART_MIN_WIDTH = 360;
@@ -138,6 +150,15 @@
     intervalInput.value = String(intervalSeconds);
     vscode.postMessage({ type: 'setInterval', intervalSeconds });
   });
+
+  for (const [kind, input] of Object.entries(dataRefreshInputs)) {
+    input?.addEventListener('change', () => {
+      const fallback = DATA_REFRESH_DEFAULTS[kind];
+      const intervalSeconds = Math.max(15, Math.floor(Number(input.value) || fallback));
+      input.value = String(intervalSeconds);
+      vscode.postMessage({ type: 'setDataRefreshInterval', kind, intervalSeconds });
+    });
+  }
 
   sortFieldSelect.addEventListener('change', () => {
     sortField = sortFieldSelect.value;
@@ -327,6 +348,12 @@
     autoRefreshToggle.checked = snapshot.settings.autoRefreshEnabled;
     liveStartNotificationsToggle.checked = snapshot.settings.liveStartNotificationsEnabled;
     intervalInput.value = String(snapshot.settings.autoRefreshIntervalSeconds);
+    const dataRefresh = snapshot.settings.dataRefresh || DATA_REFRESH_DEFAULTS;
+    for (const [kind, input] of Object.entries(dataRefreshInputs)) {
+      if (input) {
+        input.value = String(Math.max(15, Number(dataRefresh[kind]) || DATA_REFRESH_DEFAULTS[kind]));
+      }
+    }
     refreshButton.disabled = snapshot.loading;
     updateDisplayModeControl();
     updateSortFilterControls();
@@ -605,7 +632,10 @@
 
     const anchorMeta = document.createElement('div');
     anchorMeta.className = 'anchor-meta';
-    anchorMeta.textContent = `粉丝 ${formatNullableNumber(room.fansCount)}`;
+    const fansValue = document.createElement('span');
+    fansValue.textContent = formatNullableNumber(room.fansCount);
+    applyCachedMetricState(fansValue, room.fansCountStale, room.fansCountLastSuccessAt, '粉丝数');
+    anchorMeta.append(document.createTextNode('粉丝 '), fansValue);
 
     const title = document.createElement('div');
     title.className = 'title';
@@ -619,7 +649,9 @@
 
     const online = document.createElement('div');
     online.className = 'compact-metric online-metric';
-    online.append(metricLabel('在线'), metricValue(room.online === null ? '-' : formatNumber(room.online)));
+    const onlineValue = metricValue(room.online === null ? '-' : formatNumber(room.online));
+    applyCachedMetricState(onlineValue, room.onlineStale, room.onlineLastSuccessAt, '在线人数');
+    online.append(metricLabel('在线'), onlineValue);
 
     const duration = document.createElement('div');
     duration.className = 'compact-metric duration-metric';
@@ -627,7 +659,9 @@
 
     const guardFleet = document.createElement('div');
     guardFleet.className = 'compact-metric guard-metric';
-    guardFleet.append(metricLabel('舰队'), metricValue(formatGuardFleet(room.guardFleet)));
+    const guardValue = metricValue(formatGuardFleet(room.guardFleet));
+    applyCachedMetricState(guardValue, room.guardFleetStale, room.guardFleetLastSuccessAt, '舰队人数');
+    guardFleet.append(metricLabel('舰队'), guardValue);
 
     const actions = document.createElement('div');
     actions.className = 'room-actions';
@@ -674,12 +708,18 @@
     const online = document.createElement('div');
     online.className = 'compact-column compact-online';
     online.textContent = room.online === null ? '-' : formatNumber(room.online);
-    online.title = '在线人数';
+    applyCachedMetricState(online, room.onlineStale, room.onlineLastSuccessAt, '在线人数');
+    if (!room.onlineStale) {
+      online.title = '在线人数';
+    }
 
     const guardFleet = document.createElement('div');
     guardFleet.className = 'compact-column compact-guard';
     guardFleet.textContent = formatGuardFleet(room.guardFleet);
-    guardFleet.title = '舰队人数';
+    applyCachedMetricState(guardFleet, room.guardFleetStale, room.guardFleetLastSuccessAt, '舰队人数');
+    if (!room.guardFleetStale) {
+      guardFleet.title = '舰队人数';
+    }
 
     const duration = document.createElement('div');
     duration.className = 'compact-column compact-duration duration-value';
@@ -1839,10 +1879,8 @@
     trendWindowRange.value = String(trendWindowMinutes);
     trendToggle.classList.toggle('active', trendsExpanded);
     trendToggle.setAttribute('aria-pressed', String(trendsExpanded));
-    overviewTrendToggle.classList.toggle('active', overviewTrendExpanded);
-    overviewTrendToggle.setAttribute('aria-pressed', String(overviewTrendExpanded));
-    historyTrendToggle.classList.toggle('active', historyTrendExpanded);
-    historyTrendToggle.setAttribute('aria-pressed', String(historyTrendExpanded));
+    overviewTrendToggle.classList.remove('active');
+    historyTrendToggle.classList.remove('active');
     trendWindowLabel.textContent = formatTrendWindowLabel(getTrendWindow(snapshot));
   }
 
@@ -1855,7 +1893,6 @@
   function updateControlPanelState() {
     controlPanel.classList.toggle('collapsed', !controlPanelExpanded);
     controlPanel.setAttribute('aria-hidden', String(!controlPanelExpanded));
-    controlPanelToggle.classList.toggle('active', controlPanelExpanded);
     controlPanelToggle.setAttribute('aria-expanded', String(controlPanelExpanded));
     controlPanelToggle.textContent = controlPanelExpanded ? '⌃' : '⋯';
     controlPanelToggle.title = controlPanelExpanded ? '收起控制面板' : '展开控制面板';
@@ -2425,6 +2462,17 @@
     valueElement.className = 'compact-value';
     valueElement.textContent = value;
     return valueElement;
+  }
+
+  function applyCachedMetricState(element, stale, lastSuccessAt, label) {
+    if (!stale) {
+      return;
+    }
+
+    element.classList.add('metric-stale');
+    const lastSuccessText = lastSuccessAt ? formatTime(lastSuccessAt) : '未知时间';
+    element.title = `${label}本轮获取失败，正在显示上次成功数据（${lastSuccessText}）`;
+    element.setAttribute('aria-label', `${label}，本轮获取失败，显示上次成功数据（${lastSuccessText}）`);
   }
 
   function durationValue(room) {

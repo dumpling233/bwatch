@@ -6,11 +6,17 @@ export interface LiveRoomStatus {
   title: string;
   anchorName: string;
   fansCount: number | null;
+  fansCountStale?: boolean;
+  fansCountLastSuccessAt?: number;
   cover?: string;
   status: LiveStatus;
   online: number | null;
+  onlineStale?: boolean;
+  onlineLastSuccessAt?: number;
   popularity: number | null;
   guardFleet: GuardFleet | null;
+  guardFleetStale?: boolean;
+  guardFleetLastSuccessAt?: number;
   liveStartTime: number | null;
   liveDurationText: string;
   lastUpdatedAt: number;
@@ -48,6 +54,14 @@ export interface MonitorSettings {
   autoRefreshEnabled: boolean;
   autoRefreshIntervalSeconds: number;
   liveStartNotificationsEnabled: boolean;
+  dataRefresh?: DataRefreshSettings;
+}
+
+export interface DataRefreshSettings {
+  baseInfoIntervalSeconds: number;
+  onlineIntervalSeconds: number;
+  fansIntervalSeconds: number;
+  guardIntervalSeconds: number;
 }
 
 export type NetworkProxyMode = 'auto' | 'manual' | 'off';

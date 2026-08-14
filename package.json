@@ -110,6 +110,30 @@
           "minimum": 15,
           "description": "Automatic refresh interval in seconds. Values below 15 are clamped to 15."
         },
+        "bwatch.dataRefresh.baseInfoIntervalSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 15,
+          "description": "Room status and metadata request interval in seconds. Values below 15 are clamped to 15."
+        },
+        "bwatch.dataRefresh.onlineIntervalSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 15,
+          "description": "Online viewer count request interval in seconds. Values below 15 are clamped to 15."
+        },
+        "bwatch.dataRefresh.fansIntervalSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 15,
+          "description": "Fan count request interval in seconds. Values below 15 are clamped to 15."
+        },
+        "bwatch.dataRefresh.guardIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 15,
+          "description": "Guard fleet count request interval in seconds. Values below 15 are clamped to 15."
+        },
         "bwatch.notifications.liveStart.enabled": {
           "type": "boolean",
           "default": true,

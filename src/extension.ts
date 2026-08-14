@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { BilibiliLiveClient } from './bilibiliClient';
 import {
   clampAutoRefreshInterval,
+  clampDataRefreshInterval,
   moveRoomGroupToIndex,
   normalizeRoomGroups,
   normalizeRoomIds,
@@ -63,6 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
       setAutoRefreshEnabled,
       setLiveStartNotificationsEnabled,
       setAutoRefreshInterval,
+      setDataRefreshInterval,
       getHistoryDates: () => historyStore.getAvailableDates(),
       queryHistoryDate: (date, startMinute, endMinute) =>
         historyStore.queryDateHistory(date, startMinute, endMinute, getKnownRoomNames())
@@ -343,6 +345,24 @@ async function setAutoRefreshInterval(intervalSeconds: number): Promise<void> {
   await vscode.workspace
     .getConfiguration(CONFIG_SECTION)
     .update('autoRefresh.intervalSeconds', clampAutoRefreshInterval(intervalSeconds), vscode.ConfigurationTarget.Global);
+}
+
+async function setDataRefreshInterval(kind: string, intervalSeconds: number): Promise<void> {
+  const settingKeys: Record<string, string> = {
+    baseInfoIntervalSeconds: 'dataRefresh.baseInfoIntervalSeconds',
+    onlineIntervalSeconds: 'dataRefresh.onlineIntervalSeconds',
+    fansIntervalSeconds: 'dataRefresh.fansIntervalSeconds',
+    guardIntervalSeconds: 'dataRefresh.guardIntervalSeconds'
+  };
+  const settingKey = settingKeys[kind];
+  if (!settingKey) {
+    return;
+  }
+
+  const fallback = kind === 'fansIntervalSeconds' ? 300 : kind === 'guardIntervalSeconds' ? 60 : 15;
+  await vscode.workspace
+    .getConfiguration(CONFIG_SECTION)
+    .update(settingKey, clampDataRefreshInterval(intervalSeconds, fallback), vscode.ConfigurationTarget.Global);
 }
 
 async function createGroup(name: string): Promise<void> {

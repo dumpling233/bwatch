@@ -39,6 +39,16 @@
 12. 用户点击侧边栏添加图标后，扩展宿主打开 VSCode 原生输入框；纯房间号输入先通过 `fetchRooms()` 获取标准化房间状态，主播名输入通过 `searchLiveAnchors()` 获取模糊搜索结果，两条路径再通过 `src/roomSearch.ts` 映射为统一的 `RoomSearchResult` 展示结构，并按当前 `bwatch.rooms` 补充 `monitored` 状态；已监控候选显示 `已监控` 并不会重复写入配置，房间号查询返回未知或错误状态时不生成可添加候选。用户点击新建分组图标后，扩展宿主打开 VSCode 原生输入框创建分组。
 13. 用户运行 `BWatch: Diagnose Network` 时，扩展宿主用当前网络适配器依次请求基础信息、在线人数、舰队、粉丝和搜索诊断接口，并把诊断结果写入 `BWatch` 输出面板；诊断不修改监控列表、历史数据或 Webview 状态。
 
+## 刷新数据获取策略
+
+- 一轮刷新首先发起 1 次 `getRoomBaseInfo` 批量请求，通过重复 `room_ids` 参数获取当前监控列表的基础状态。54 个房间不会拆成 54 次基础信息请求。
+- 基础信息成功后，客户端按房间补充请求：每个有 UID 的房间 1 次粉丝数请求、1 次舰队总人数请求；每个开播房间额外 1 次在线人数请求。因此 54 个房间、4 个开播时首轮最多约 113 次 HTTP 请求，其中基础信息为 1 次，其余是接口本身不提供批量版本的补充查询。
+- 补充请求以 6 个房间为并发上限；单个房间内粉丝和舰队请求并行，单个字段失败不会阻塞其他房间或其他字段。
+- 粉丝数缓存 5 分钟，舰队总人数缓存 1 分钟，缓存只存在扩展宿主进程内；缓存有效时跳过对应接口，过期后重新请求。请求失败时沿用上一次成功值，首次失败才使用缺失值。
+- 补充字段结果同时携带 `stale` 和最近成功时间；Webview 对“本轮失败但沿用缓存”的粉丝数/舰队数显示黄色，并在原生 tooltip 中显示失败说明和最近成功时间；没有缓存的首次失败仍显示缺失值。
+- 在线人数不使用短时缓存，仍然在每轮刷新对当前开播房间请求 `getOnlineGoldRank`，以保证展示和历史采样使用当前轮数据；失败时继续使用 `null`，不回退基础接口人气。
+- 刷新整体耗时主要由批量基础信息、补充接口响应速度、代理连接建立和限流共同决定。历史走势读取本地文件，不参与 B站网络请求；主播搜索也只在用户主动搜索时触发。
+
 ## 主列表子面板布局
 
 - `room-list-panel` 是主列表及其操作的统一 Webview 子面板，内部按“列表控制 -> 列表配置 -> 刷新摘要 -> 分组详情列表”的顺序组织内容；它与总览、历史走势共用 `subpanel`、`subpanel-titlebar` 和 `subpanel-content` 的标题栏/内容区结构。
@@ -54,6 +64,10 @@
   - `bwatch.groups: { id: string; name: string; rooms: string[] }[]`
   - `bwatch.autoRefresh.enabled: boolean`
   - `bwatch.autoRefresh.intervalSeconds: number`
+  - `bwatch.dataRefresh.baseInfoIntervalSeconds: number`
+  - `bwatch.dataRefresh.onlineIntervalSeconds: number`
+  - `bwatch.dataRefresh.fansIntervalSeconds: number`
+  - `bwatch.dataRefresh.guardIntervalSeconds: number`
   - `bwatch.notifications.liveStart.enabled: boolean`
 - `bwatch.network.proxy.mode: 'auto' | 'manual' | 'off'`
 - `bwatch.network.proxy.url: string`
@@ -61,6 +75,14 @@
 - 第三方服务：B站直播房间信息接口和主播搜索接口；失败时需要在 UI 中显示未知/错误状态。主播搜索接口返回 HTTP 412 或错误码 `-412` 时视为可恢复的搜索拦截，UI 提示稍后重试或直接输入直播间房间号。
 - 在线人数口径：直播中在线观众人数只使用在线榜接口 `onlineNum`；该接口失败时 `online = null`，基础信息接口 `online` 只作为内部人气字段。
 - 网络诊断：`BWatch: Diagnose Network` 只写 VSCode `BWatch` Output Channel，不写本地日志文件；诊断输出会展示代理模式、代理来源、代理地址以及 auto 模式下的本地代理候选；常规错误状态仍展示在侧边栏中，开发验证通过测试输出体现。
+
+## 刷新配置数据流
+
+- `readMonitorSettings()` 读取总轮询配置和四个 `dataRefresh.*IntervalSeconds` 配置，并将其放入 `MonitorSettings.dataRefresh`。
+- `LiveMonitor` 仍按总轮询间隔调用 `refresh()`；`BilibiliLiveClient.fetchRooms()` 接收数据刷新设置，分别判断基础信息、在线人数、粉丝数和舰队人数的缓存是否到期。
+- 基础信息通过单次批量接口获取；三类补充数据通过房间级请求获取，并受最多 6 个房间并发限制。在线人数、粉丝数和舰队人数的成功值保存在客户端内存缓存中，失败时返回旧值和 stale 标记。
+- Webview 只负责编辑和展示设置，不自行请求 B 站接口；设置变更通过 `setDataRefreshInterval` 消息回到扩展宿主，再由 VSCode 配置监听同步给监控器。
+- Webview 选择型按钮通过 `active` 类和 `aria-pressed` 表示统一的开关状态；CSS 以透明边框/实心按钮色区分未选中与选中，不使用悬浮色模拟持久状态。
 
 ## AI 修改代码时需要注意的架构约束
 

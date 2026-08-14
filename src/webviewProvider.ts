@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { formatUpdatedAt } from './time';
-import { HistoryDateSummary, HistoryQueryResult, MonitorSnapshot } from './types';
+import { DataRefreshSettings, HistoryDateSummary, HistoryQueryResult, MonitorSnapshot } from './types';
 
 type WebviewMessage =
   | { type: 'ready' }
@@ -17,6 +17,7 @@ type WebviewMessage =
   | { type: 'toggleAutoRefresh'; enabled: boolean }
   | { type: 'toggleLiveStartNotifications'; enabled: boolean }
   | { type: 'setInterval'; intervalSeconds: number }
+  | { type: 'setDataRefreshInterval'; kind: keyof DataRefreshSettings; intervalSeconds: number }
   | { type: 'loadHistoryDates'; requestId: number }
   | { type: 'loadHistoryDate'; requestId: number; date: string; startMinute: number; endMinute: number };
 
@@ -34,6 +35,7 @@ export interface WebviewActions {
   setAutoRefreshEnabled(enabled: boolean): void;
   setLiveStartNotificationsEnabled(enabled: boolean): void;
   setAutoRefreshInterval(intervalSeconds: number): void;
+  setDataRefreshInterval(kind: keyof DataRefreshSettings, intervalSeconds: number): void;
   getHistoryDates(): HistoryDateSummary[];
   queryHistoryDate(date: string, startMinute: number, endMinute: number): HistoryQueryResult;
 }
@@ -114,6 +116,9 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
         break;
       case 'setInterval':
         this.actions.setAutoRefreshInterval(message.intervalSeconds);
+        break;
+      case 'setDataRefreshInterval':
+        this.actions.setDataRefreshInterval(message.kind, message.intervalSeconds);
         break;
       case 'loadHistoryDates':
         this.handleHistoryDates(message.requestId);
@@ -237,13 +242,6 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
           </section>
 
           <section class="control-section">
-            <div class="control-section-title">分组</div>
-            <div class="group-controls">
-              <div id="group-manager" class="group-manager" aria-label="自定义分组"></div>
-            </div>
-          </section>
-
-          <section class="control-section">
             <div class="control-section-title">刷新</div>
             <div class="settings-row">
               <label class="switch">
@@ -251,7 +249,7 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
                 <span>自动</span>
               </label>
               <label class="interval-field">
-                <span>间隔</span>
+                <span>总轮询</span>
                 <input id="interval-input" type="number" min="15" step="1">
                 <span>s</span>
               </label>
@@ -259,6 +257,35 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
                 <input id="live-start-notifications-toggle" type="checkbox">
                 <span>提醒</span>
               </label>
+            </div>
+            <div class="data-refresh-grid">
+              <label class="interval-field data-refresh-field">
+                <span>房间状态</span>
+                <input id="base-info-interval-input" type="number" min="15" step="1">
+                <span>s</span>
+              </label>
+              <label class="interval-field data-refresh-field">
+                <span>在线人数</span>
+                <input id="online-interval-input" type="number" min="15" step="1">
+                <span>s</span>
+              </label>
+              <label class="interval-field data-refresh-field">
+                <span>粉丝数</span>
+                <input id="fans-interval-input" type="number" min="15" step="1">
+                <span>s</span>
+              </label>
+              <label class="interval-field data-refresh-field">
+                <span>舰队人数</span>
+                <input id="guard-interval-input" type="number" min="15" step="1">
+                <span>s</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="control-section">
+            <div class="control-section-title">分组</div>
+            <div class="group-controls">
+              <div id="group-manager" class="group-manager" aria-label="自定义分组"></div>
             </div>
           </section>
         </section>

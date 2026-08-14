@@ -1,6 +1,12 @@
-import { MonitorSettings, NetworkProxyMode, NetworkProxySettings, RoomGroup } from './types';
+import { DataRefreshSettings, MonitorSettings, NetworkProxyMode, NetworkProxySettings, RoomGroup } from './types';
 
 export const MIN_AUTO_REFRESH_INTERVAL_SECONDS = 15;
+export const DEFAULT_DATA_REFRESH_SETTINGS: DataRefreshSettings = {
+  baseInfoIntervalSeconds: 15,
+  onlineIntervalSeconds: 15,
+  fansIntervalSeconds: 300,
+  guardIntervalSeconds: 60
+};
 
 export interface RawConfiguration {
   get<T>(section: string, defaultValue: T): T;
@@ -30,6 +36,36 @@ export function clampAutoRefreshInterval(value: unknown): number {
   }
 
   return Math.max(MIN_AUTO_REFRESH_INTERVAL_SECONDS, Math.floor(interval));
+}
+
+export function clampDataRefreshInterval(value: unknown, fallback: number): number {
+  const interval = Number(value);
+  if (!Number.isFinite(interval)) {
+    return fallback;
+  }
+
+  return Math.max(MIN_AUTO_REFRESH_INTERVAL_SECONDS, Math.floor(interval));
+}
+
+export function readDataRefreshSettings(configuration: RawConfiguration): DataRefreshSettings {
+  return {
+    baseInfoIntervalSeconds: clampDataRefreshInterval(
+      configuration.get<unknown>('dataRefresh.baseInfoIntervalSeconds', DEFAULT_DATA_REFRESH_SETTINGS.baseInfoIntervalSeconds),
+      DEFAULT_DATA_REFRESH_SETTINGS.baseInfoIntervalSeconds
+    ),
+    onlineIntervalSeconds: clampDataRefreshInterval(
+      configuration.get<unknown>('dataRefresh.onlineIntervalSeconds', DEFAULT_DATA_REFRESH_SETTINGS.onlineIntervalSeconds),
+      DEFAULT_DATA_REFRESH_SETTINGS.onlineIntervalSeconds
+    ),
+    fansIntervalSeconds: clampDataRefreshInterval(
+      configuration.get<unknown>('dataRefresh.fansIntervalSeconds', DEFAULT_DATA_REFRESH_SETTINGS.fansIntervalSeconds),
+      DEFAULT_DATA_REFRESH_SETTINGS.fansIntervalSeconds
+    ),
+    guardIntervalSeconds: clampDataRefreshInterval(
+      configuration.get<unknown>('dataRefresh.guardIntervalSeconds', DEFAULT_DATA_REFRESH_SETTINGS.guardIntervalSeconds),
+      DEFAULT_DATA_REFRESH_SETTINGS.guardIntervalSeconds
+    )
+  };
 }
 
 export function normalizeRoomGroups(values: readonly unknown[], validRoomIds: readonly string[] = []): RoomGroup[] {
@@ -137,7 +173,8 @@ export function readMonitorSettings(configuration: RawConfiguration): MonitorSet
     autoRefreshIntervalSeconds: clampAutoRefreshInterval(
       configuration.get<number>('autoRefresh.intervalSeconds', MIN_AUTO_REFRESH_INTERVAL_SECONDS)
     ),
-    liveStartNotificationsEnabled: configuration.get<boolean>('notifications.liveStart.enabled', true)
+    liveStartNotificationsEnabled: configuration.get<boolean>('notifications.liveStart.enabled', true),
+    dataRefresh: readDataRefreshSettings(configuration)
   };
 }
 

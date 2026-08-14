@@ -1,5 +1,6 @@
 import { formatLiveDuration } from './time';
-import { GuardFleet, LiveAnchorSearchResult, LiveRoomStatus } from './types';
+import { DataRefreshSettings, GuardFleet, LiveAnchorSearchResult, LiveRoomStatus } from './types';
+import { DEFAULT_DATA_REFRESH_SETTINGS } from './config';
 import { FetchLike, formatNetworkError } from './network';
 
 const BASE_INFO_URL = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo';
@@ -10,6 +11,17 @@ const RELATION_STAT_URL = 'https://api.bilibili.com/x/relation/stat';
 const BILIBILI_BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const BILIBILI_SEARCH_BLOCKED_MESSAGE = 'B站主播搜索暂时被拦截，请稍后再试，或直接输入直播间房间号';
+const ROOM_ENRICHMENT_CONCURRENCY = 6;
+interface CachedNumber {
+  value: number;
+  fetchedAt: number;
+}
+
+interface CachedFieldResult<T> {
+  value: T;
+  stale: boolean;
+  lastSuccessAt?: number;
+}
 
 interface BilibiliBaseInfoResponse {
   code?: number;
@@ -79,43 +91,85 @@ interface BilibiliLiveUserSearchItem {
 }
 
 export class BilibiliLiveClient {
+  private readonly fansCache = new Map<string, CachedNumber>();
+  private readonly guardCache = new Map<string, CachedNumber>();
+  private readonly onlineCache = new Map<string, CachedNumber>();
+  private baseInfoCache?: {
+    roomIdsKey: string;
+    payload: BilibiliBaseInfoResponse;
+    fetchedAt: number;
+  };
+
   constructor(private readonly fetchImpl: FetchLike = fetch) {}
 
-  async fetchRooms(roomIds: readonly string[], nowMs = Date.now()): Promise<LiveRoomStatus[]> {
+  async fetchRooms(
+    roomIds: readonly string[],
+    nowMs = Date.now(),
+    refreshSettings: DataRefreshSettings = DEFAULT_DATA_REFRESH_SETTINGS
+  ): Promise<LiveRoomStatus[]> {
     const uniqueRoomIds = [...new Set(roomIds)];
     if (uniqueRoomIds.length === 0) {
       return [];
     }
 
     try {
-      const payload = await this.requestBaseInfo(uniqueRoomIds);
+      const payload = await this.getBaseInfo(uniqueRoomIds, nowMs, refreshSettings.baseInfoIntervalSeconds);
       const statuses = uniqueRoomIds.map((roomId) => normalizeRoomInfo(roomId, payload.data?.by_room_ids?.[roomId], nowMs));
 
-      return Promise.all(
-        statuses.map(async (status) => {
+      return mapWithConcurrency(
+        statuses,
+        ROOM_ENRICHMENT_CONCURRENCY,
+        async (status) => {
           const info = payload.data?.by_room_ids?.[status.roomId];
           if (!info?.uid) {
             return status;
           }
 
           const [online, guardFleet, fansCount] = await Promise.all([
-            status.status === 'live' ? this.requestOnlineViewerCount(status.roomId, info.uid) : Promise.resolve(null),
-            this.requestGuardFleet(status.roomId, info.uid),
-            this.requestFansCount(info.uid)
+            status.status === 'live'
+              ? this.getOnlineViewerCount(status.roomId, info.uid, nowMs, refreshSettings.onlineIntervalSeconds)
+              : Promise.resolve({ value: status.online, stale: false } as CachedFieldResult<number | null>),
+            this.getGuardFleet(status.roomId, info.uid, nowMs, refreshSettings.guardIntervalSeconds),
+            this.getFansCount(info.uid, nowMs, refreshSettings.fansIntervalSeconds)
           ]);
 
           return {
             ...status,
-            online: status.status === 'live' ? online : status.online,
-            guardFleet: guardFleet ?? status.guardFleet,
-            fansCount: fansCount ?? status.fansCount
+            online: status.status === 'live' ? online.value : status.online,
+            onlineStale: online.stale,
+            onlineLastSuccessAt: online.lastSuccessAt,
+            guardFleet: guardFleet.value ?? status.guardFleet,
+            guardFleetStale: guardFleet.stale,
+            guardFleetLastSuccessAt: guardFleet.lastSuccessAt,
+            fansCount: fansCount.value ?? status.fansCount,
+            fansCountStale: fansCount.stale,
+            fansCountLastSuccessAt: fansCount.lastSuccessAt
           };
-        })
+        }
       );
     } catch (error) {
       const message = formatNetworkError(error);
       return uniqueRoomIds.map((roomId) => createErrorStatus(roomId, message, nowMs));
     }
+  }
+
+  private async getBaseInfo(
+    roomIds: readonly string[],
+    nowMs: number,
+    intervalSeconds: number
+  ): Promise<BilibiliBaseInfoResponse> {
+    const roomIdsKey = [...roomIds].sort().join(',');
+    if (
+      this.baseInfoCache &&
+      this.baseInfoCache.roomIdsKey === roomIdsKey &&
+      nowMs - this.baseInfoCache.fetchedAt < intervalSeconds * 1000
+    ) {
+      return this.baseInfoCache.payload;
+    }
+
+    const payload = await this.requestBaseInfo(roomIds);
+    this.baseInfoCache = { roomIdsKey, payload, fetchedAt: nowMs };
+    return payload;
   }
 
   async searchLiveAnchors(keyword: string): Promise<LiveAnchorSearchResult[]> {
@@ -203,6 +257,29 @@ export class BilibiliLiveClient {
     return payload;
   }
 
+  private async getOnlineViewerCount(
+    roomId: string,
+    uid: number,
+    nowMs: number,
+    intervalSeconds: number
+  ): Promise<CachedFieldResult<number | null>> {
+    const cacheKey = `${roomId}:${uid}`;
+    const cached = this.onlineCache.get(cacheKey);
+    if (cached && nowMs - cached.fetchedAt < intervalSeconds * 1000) {
+      return { value: cached.value, stale: false, lastSuccessAt: cached.fetchedAt };
+    }
+
+    const online = await this.requestOnlineViewerCount(roomId, uid);
+    if (online !== null) {
+      this.onlineCache.set(cacheKey, { value: online, fetchedAt: nowMs });
+      return { value: online, stale: false, lastSuccessAt: nowMs };
+    }
+
+    return cached
+      ? { value: cached.value, stale: true, lastSuccessAt: cached.fetchedAt }
+      : { value: null, stale: false };
+  }
+
   private async requestOnlineViewerCount(roomId: string, uid: number): Promise<number | null> {
     try {
       const url = new URL(ONLINE_RANK_URL);
@@ -231,6 +308,51 @@ export class BilibiliLiveClient {
     } catch {
       return null;
     }
+  }
+
+  private async getGuardFleet(
+    roomId: string,
+    uid: number,
+    nowMs = Date.now(),
+    intervalSeconds = DEFAULT_DATA_REFRESH_SETTINGS.guardIntervalSeconds
+  ): Promise<CachedFieldResult<GuardFleet | null>> {
+    const cacheKey = `${roomId}:${uid}`;
+    const cached = this.guardCache.get(cacheKey);
+    if (cached && nowMs - cached.fetchedAt < intervalSeconds * 1000) {
+      return { value: { total: cached.value }, stale: false, lastSuccessAt: cached.fetchedAt };
+    }
+
+    const fleet = await this.requestGuardFleet(roomId, uid);
+    if (fleet) {
+      this.guardCache.set(cacheKey, { value: fleet.total, fetchedAt: nowMs });
+      return { value: fleet, stale: false, lastSuccessAt: nowMs };
+    }
+
+    return cached
+      ? { value: { total: cached.value }, stale: true, lastSuccessAt: cached.fetchedAt }
+      : { value: null, stale: false };
+  }
+
+  private async getFansCount(
+    uid: number,
+    nowMs = Date.now(),
+    intervalSeconds = DEFAULT_DATA_REFRESH_SETTINGS.fansIntervalSeconds
+  ): Promise<CachedFieldResult<number | null>> {
+    const cacheKey = String(uid);
+    const cached = this.fansCache.get(cacheKey);
+    if (cached && nowMs - cached.fetchedAt < intervalSeconds * 1000) {
+      return { value: cached.value, stale: false, lastSuccessAt: cached.fetchedAt };
+    }
+
+    const fansCount = await this.requestFansCount(uid);
+    if (fansCount !== null) {
+      this.fansCache.set(cacheKey, { value: fansCount, fetchedAt: nowMs });
+      return { value: fansCount, stale: false, lastSuccessAt: nowMs };
+    }
+
+    return cached
+      ? { value: cached.value, stale: true, lastSuccessAt: cached.fetchedAt }
+      : { value: null, stale: false };
   }
 
   private async requestGuardFleet(roomId: string, uid: number): Promise<GuardFleet | null> {
@@ -403,4 +525,28 @@ function normalizeImageUrl(value: string | undefined): string | undefined {
   }
 
   return value.startsWith('//') ? `https:${value}` : value;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) {
+          return;
+        }
+        results[index] = await worker(items[index], index);
+      }
+    })
+  );
+
+  return results;
 }
