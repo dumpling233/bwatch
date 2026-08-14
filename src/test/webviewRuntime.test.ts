@@ -289,6 +289,10 @@ test('room list operations share one subpanel and advanced controls stay inside 
   assert.match(css, /\.trend-toggle\.active[\s\S]*background:\s*var\(--vscode-button-background\)/);
   assert.match(css, /\.overview-mode-button\s*\{[\s\S]*background:\s*transparent/);
   assert.match(css, /\.overview-mode-button\.active[\s\S]*background:\s*var\(--vscode-button-background\)/);
+  assert.match(css, /\.overview-chart\s*\{[\s\S]*height:\s*238px/);
+  assert.match(css, /\.overview-placeholder\s*\{[\s\S]*height:\s*238px/);
+  assert.match(css, /\.trend-chart\s*\{[\s\S]*height:\s*91px/);
+  assert.match(css, /\.trend-placeholder\s*\{[\s\S]*height:\s*86px/);
   assert.match(css, /\.overview-trend\.collapsed \.aggregate-panel-titlebar\s*\{[\s\S]*border-bottom-color:\s*transparent/);
   assert.match(css, /\.room-list-panel-content\s*\{[\s\S]*padding:/);
 });
