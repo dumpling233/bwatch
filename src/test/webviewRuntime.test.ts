@@ -30,6 +30,10 @@ function readWebviewSource(): string {
   return fs.readFileSync(path.resolve(__dirname, '../../media/webview.js'), 'utf8');
 }
 
+function readWebviewProviderSource(): string {
+  return fs.readFileSync(path.resolve(__dirname, '../../src/webviewProvider.ts'), 'utf8');
+}
+
 function extractFunction(source: string, name: string, nextName: string): string {
   const start = source.indexOf(`  function ${name}`);
   const end = source.indexOf(`\n  function ${nextName}`, start);
@@ -206,4 +210,75 @@ test('group drag target calculation handles long-distance reordering', () => {
   assert.equal(getTarget(groups, 'c', 0, false), 0);
   assert.equal(getTarget(groups, 'a', 1, false), 0);
   assert.equal(getTarget(groups, 'missing', 1, true), -1);
+});
+
+test('aggregate trend panels keep permanent titlebars and collapse only their content', () => {
+  const providerSource = readWebviewProviderSource();
+  const webviewSource = readWebviewSource();
+  const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
+  const overviewRenderSource = extractFunction(webviewSource, 'renderOverviewTrend', 'buildOverviewTrend');
+  const historyRenderSource = extractFunction(webviewSource, 'renderHistoryTrend', 'buildHistoryTrend');
+
+  assert.doesNotMatch(providerSource, /聚合走势/);
+  assert.match(providerSource, /id="overview-trend-toggle"[\s\S]*id="overview-trend-content"/);
+  assert.match(providerSource, /id="history-trend-toggle"[\s\S]*id="history-trend-content"/);
+  assert.doesNotMatch(providerSource, /id="overview-trend" class="overview-trend hidden"/);
+  assert.doesNotMatch(providerSource, /id="history-trend" class="overview-trend hidden"/);
+  assert.match(overviewRenderSource, /overviewTrendContent\.classList\.toggle\('hidden', !overviewTrendExpanded\)/);
+  assert.match(historyRenderSource, /historyTrendContent\.classList\.toggle\('hidden', !historyTrendExpanded\)/);
+  assert.doesNotMatch(overviewRenderSource, /overviewTrend\.classList\.toggle\('hidden'/);
+  assert.doesNotMatch(historyRenderSource, /historyTrend\.classList\.toggle\('hidden'/);
+  assert.match(css, /\.aggregate-panel-titlebar\s*\{[\s\S]*grid-template-columns:\s*28px/);
+});
+
+test('room list operations share one subpanel and advanced controls stay inside it', () => {
+  const providerSource = readWebviewProviderSource();
+  const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
+  const panelStart = providerSource.indexOf('<section id="room-list-panel"');
+  const panelEnd = providerSource.indexOf('<section id="overview-trend"', panelStart);
+  const panelSource = providerSource.slice(panelStart, panelEnd);
+  const toolbarStart = providerSource.indexOf('<section class="toolbar"');
+  const toolbarEnd = providerSource.indexOf('</section>', toolbarStart);
+  const toolbarSource = providerSource.slice(toolbarStart, toolbarEnd);
+
+  assert.notEqual(panelStart, -1);
+  assert.notEqual(panelEnd, -1);
+  assert.ok(panelSource.indexOf('class="list-controls"') < panelSource.indexOf('id="control-panel"'));
+  assert.ok(panelSource.indexOf('id="control-panel"') < panelSource.indexOf('id="summary"'));
+  assert.ok(panelSource.indexOf('id="summary"') < panelSource.indexOf('id="rooms"'));
+  assert.match(panelSource, /id="create-group-button"[\s\S]*id="control-panel-toggle"/);
+  assert.match(panelSource, /id="control-panel-toggle"[\s\S]*aria-controls="control-panel"/);
+  assert.doesNotMatch(toolbarSource, /control-panel-toggle/);
+  assert.doesNotMatch(toolbarSource, /create-group-button/);
+  assert.match(css, /\.toolbar\s*\{[\s\S]*repeat\(2, 28px\)/);
+  assert.match(css, /\.room-list-panel\s*\{[\s\S]*border:/);
+  assert.match(css, /\.room-list-panel\s*\{[\s\S]*order:\s*3/);
+  assert.match(css, /\.overview-trend\s*\{[\s\S]*order:\s*1/);
+  assert.match(css, /\.display-controls\s*\{[\s\S]*repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.status-filter\s*\{[\s\S]*grid-column:\s*span 3/);
+  assert.match(css, /\.status-filter button\s*\{[\s\S]*height:\s*28px/);
+  assert.match(css, /\.overview-trend\.collapsed \.aggregate-panel-titlebar\s*\{[\s\S]*border-bottom-color:\s*transparent/);
+  assert.match(css, /\.room-list-panel-content\s*\{[\s\S]*padding:/);
+});
+
+test('all three subpanels share a titlebar and the room list has an independent persisted toggle', () => {
+  const providerSource = readWebviewProviderSource();
+  const webviewSource = readWebviewSource();
+  const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
+  const roomListRenderSource = extractFunction(webviewSource, 'render', 'rerenderLatestSnapshot');
+
+  assert.match(providerSource, /id="room-list-toggle"[\s\S]*aria-controls="room-list-content"/);
+  assert.match(providerSource, /id="room-list-content" class="subpanel-content room-list-panel-content"/);
+  assert.match(providerSource, /class="subpanel-titlebar room-list-panel-header"/);
+  assert.match(providerSource, /class="subpanel-titlebar aggregate-panel-titlebar"/g);
+  assert.match(webviewSource, /const roomListToggle = document\.getElementById\('room-list-toggle'\)/);
+  assert.match(webviewSource, /let roomListExpanded = persistedState\.roomListExpanded/);
+  assert.match(webviewSource, /roomListExpanded,\s*\n\s*controlPanelExpanded/);
+  assert.match(webviewSource, /roomListExpanded: safeState\.roomListExpanded !== false/);
+  assert.match(roomListRenderSource, /updateSubpanelToggle\(roomListPanel, roomListContent, roomListToggle, roomListExpanded/);
+  assert.match(webviewSource, /function updateSubpanelToggle\(panel, content, toggle, expanded, label\)/);
+  assert.match(css, /\.subpanel\s*\{[\s\S]*border:/);
+  assert.match(css, /\.subpanel-titlebar\s*\{[\s\S]*grid-template-columns:\s*28px minmax\(0, 1fr\) max-content/);
+  assert.match(css, /\.subpanel-toggle,[\s\S]*width:\s*28px[\s\S]*height:\s*28px/);
+  assert.match(css, /\.subpanel\.collapsed \.subpanel-titlebar\s*\{[\s\S]*border-bottom-color:\s*transparent/);
 });

@@ -23,13 +23,13 @@ input {
   display: flex;
   min-width: 240px;
   flex-direction: column;
-  gap: 10px;
-  padding: 10px;
+  gap: 6px;
+  padding: 6px 8px;
 }
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(4, 28px);
+  grid-template-columns: minmax(0, 1fr) repeat(2, 28px);
   align-items: center;
   gap: 4px;
 }
@@ -98,13 +98,118 @@ button:hover {
   background: transparent;
 }
 
-.control-panel {
+.subpanel {
   display: grid;
+  min-width: 0;
   border: 1px solid var(--vscode-panel-border);
   border-radius: 6px;
-  padding: 8px;
-  gap: 7px;
   background: color-mix(in srgb, var(--vscode-sideBar-background), var(--vscode-editor-background) 36%);
+  overflow: hidden;
+}
+
+.room-list-panel {
+  order: 3;
+}
+
+.overview-trend {
+  order: 1;
+}
+
+.history-trend {
+  order: 2;
+}
+
+.room-list-panel-header {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) max-content;
+  align-items: center;
+  min-width: 0;
+  min-height: 34px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding: 3px 6px 3px 8px;
+}
+
+.room-list-panel-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-list-panel-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 28px);
+  justify-content: end;
+  align-items: center;
+  gap: 4px;
+}
+
+.subpanel-titlebar {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) max-content;
+  align-items: center;
+  min-width: 0;
+  min-height: 34px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding: 3px 6px 3px 8px;
+}
+
+.subpanel-toggle,
+.subpanel-action,
+.room-list-panel-actions .icon-button,
+.aggregate-panel-toggle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.room-list-panel-content {
+  display: grid;
+  min-width: 0;
+  padding: 6px 8px 8px;
+}
+
+.subpanel-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subpanel-content {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.subpanel-content.hidden {
+  display: none;
+}
+
+.subpanel.collapsed .subpanel-titlebar {
+  border-bottom-color: transparent;
+}
+
+/* Keep the legacy selectors explicit for themes or extensions that target the old panel classes. */
+.overview-trend.collapsed .aggregate-panel-titlebar {
+  border-bottom-color: transparent;
+}
+
+.room-list-panel.collapsed .room-list-panel-header {
+  border-bottom-color: transparent;
+}
+
+.control-panel {
+  display: grid;
+  gap: 7px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding: 8px 0;
 }
 
 .control-panel.collapsed {
@@ -114,9 +219,10 @@ button:hover {
 .list-controls {
   display: grid;
   min-width: 0;
-  gap: 7px;
+  gap: 6px;
   border-bottom: 1px solid var(--vscode-panel-border);
-  padding-bottom: 9px;
+  padding-top: 6px;
+  padding-bottom: 8px;
 }
 
 .control-section {
@@ -136,9 +242,13 @@ button:hover {
 
 .display-controls {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: center;
   gap: 6px;
+}
+
+.display-controls .mode-toggle {
+  width: 100%;
 }
 
 .mode-toggle {
@@ -193,12 +303,13 @@ button:hover {
 
 .status-filter {
   display: grid;
+  grid-column: span 3;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
 .status-filter button {
-  height: 24px;
+  height: 28px;
   color: var(--vscode-foreground);
   background: var(--vscode-button-secondaryBackground, transparent);
 }
@@ -381,15 +492,42 @@ button:hover {
 .summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
+  padding-top: 6px;
   color: var(--vscode-descriptionForeground);
 }
 
 .overview-trend {
   display: grid;
+  box-sizing: border-box;
+  gap: 0;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+.aggregate-panel-titlebar {
+  grid-template-columns: 28px minmax(0, 1fr) max-content;
+}
+
+.disclosure-icon {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg) translate(-1px, 1px);
+  transition: transform 120ms ease;
+}
+
+.aggregate-panel-toggle.expanded .disclosure-icon {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.aggregate-panel-content {
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
 }
 
 .overview-trend-panel {
@@ -398,10 +536,6 @@ button:hover {
   box-sizing: border-box;
   width: 100%;
   min-width: 360px;
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 6px;
-  padding: 8px;
-  background: var(--vscode-editor-background);
 }
 
 .overview-trend-header,
@@ -415,8 +549,6 @@ button:hover {
 .overview-trend-title {
   min-width: 0;
   overflow: hidden;
-  border-bottom: 1px solid var(--vscode-panel-border);
-  padding-bottom: 6px;
   font-size: 13px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -857,7 +989,8 @@ button:hover {
 .rooms {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 4px;
+  padding-top: 2px;
 }
 
 .empty {
@@ -871,7 +1004,7 @@ button:hover {
 .room-group {
   display: grid;
   min-width: 0;
-  gap: 5px;
+  gap: 3px;
 }
 
 .room-group-header {
@@ -879,7 +1012,7 @@ button:hover {
   align-items: center;
   box-sizing: border-box;
   min-width: 0;
-  margin-left: 14px;
+  margin-left: 6px;
   border: 0;
   border-radius: 4px;
   color: var(--vscode-foreground);
@@ -890,7 +1023,7 @@ button:hover {
 .room-group-header.is-compact {
   grid-template-columns: 12px minmax(82px, 1fr) 58px 58px 66px 28px;
   gap: 7px;
-  width: calc(100% - 14px);
+  width: calc(100% - 6px);
   min-height: 28px;
   padding: 3px 4px;
 }
@@ -898,9 +1031,9 @@ button:hover {
 .room-group-header.is-detail {
   grid-template-columns: 10px minmax(0, 1fr) 92px 72px 78px 72px 86px;
   gap: 8px;
-  width: calc(100% - 14px);
+  width: calc(100% - 6px);
   min-height: 34px;
-  padding: 7px 8px 7px 14px;
+  padding: 7px 8px;
 }
 
 .room-group-header:hover {
@@ -980,9 +1113,9 @@ button:hover {
 
 .room-group-body {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  padding-left: 14px;
+  padding-left: 6px;
 }
 
 .room-group-empty {
@@ -996,11 +1129,11 @@ button:hover {
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr) 92px 72px 78px 72px 86px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   border: 1px solid var(--vscode-panel-border);
   border-radius: 6px;
   overflow: hidden;
-  padding: 7px 8px 7px 14px;
+  padding: 7px 8px;
   background: var(--vscode-editor-background);
 }
 

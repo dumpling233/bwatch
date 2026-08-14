@@ -185,88 +185,107 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
       <div class="toolbar-spacer" aria-hidden="true"></div>
       <button id="refresh-button" class="icon-button" title="立即刷新" aria-label="立即刷新">↻</button>
       <button id="open-search-button" class="icon-button" title="搜索添加直播间" aria-label="搜索添加直播间">＋</button>
-      <button id="create-group-button" class="icon-button" title="新建分组" aria-label="新建分组">⊞</button>
-      <button id="control-panel-toggle" class="icon-button control-panel-toggle" title="展开控制面板" aria-label="展开控制面板" aria-expanded="false" aria-controls="control-panel">⋯</button>
     </section>
 
-    <section class="list-controls" aria-label="主列表控制">
-      <div class="display-controls">
-        <button id="display-mode-toggle" class="mode-toggle" title="切换展示模式">简略</button>
-        <div class="status-filter" role="group" aria-label="主播状态筛选">
-          <button id="filter-all-button" title="显示全部主播">全部</button>
-          <button id="filter-live-button" title="只显示开播主播">开播</button>
-          <button id="filter-offline-button" title="只显示未开播主播">未开播</button>
+    <section id="room-list-panel" class="subpanel room-list-panel" aria-label="直播间列表">
+      <div class="subpanel-titlebar room-list-panel-header">
+        <button id="room-list-toggle" class="subpanel-toggle aggregate-panel-toggle icon-button" type="button" aria-expanded="true" title="收起直播间列表" aria-label="收起直播间列表" aria-controls="room-list-content">
+          <span class="disclosure-icon" aria-hidden="true"></span>
+        </button>
+        <span class="subpanel-title room-list-panel-title">直播间列表</span>
+        <div class="subpanel-actions room-list-panel-actions">
+          <button id="create-group-button" class="icon-button" title="新建分组" aria-label="新建分组">⊞</button>
+          <button id="control-panel-toggle" class="icon-button control-panel-toggle" title="展开列表配置" aria-label="展开列表配置" aria-expanded="false" aria-controls="control-panel">⋯</button>
         </div>
       </div>
-      <div class="list-trend-controls">
-        <button id="trend-toggle" class="trend-toggle" title="展开在线人数走势">小图</button>
-        <label class="trend-range-field">
-          <span id="trend-window-label">最近 1 分钟</span>
-          <input id="trend-window-range" type="range" min="1" max="360" step="1" value="1">
-        </label>
-      </div>
-    </section>
-
-    <section id="control-panel" class="control-panel collapsed" aria-label="控制面板" aria-hidden="true">
-      <section class="control-section">
-        <div class="control-section-title">排序</div>
-        <div class="sort-filter-controls">
-          <label class="sort-field">
-            <span>字段</span>
-            <select id="sort-field-select">
-              <option value="default">默认顺序</option>
-              <option value="live">是否开播</option>
-              <option value="online">在线人数</option>
-              <option value="guard">舰队人数</option>
-              <option value="fans">粉丝人数</option>
-              <option value="duration">直播时长</option>
-            </select>
-          </label>
-          <button id="sort-direction-toggle" class="ghost-button" title="切换排序方向">大到小</button>
-        </div>
-      </section>
-
-      <section class="control-section">
-        <div class="control-section-title">分组</div>
-        <div class="group-controls">
-          <div id="group-manager" class="group-manager" aria-label="自定义分组"></div>
-        </div>
-      </section>
-
-      <section class="control-section">
-        <div class="control-section-title">刷新</div>
-        <div class="settings-row">
-          <label class="switch">
-            <input id="auto-refresh-toggle" type="checkbox">
-            <span>自动</span>
-          </label>
-          <label class="interval-field">
-            <span>间隔</span>
-            <input id="interval-input" type="number" min="15" step="1">
-            <span>s</span>
-          </label>
-          <label class="switch">
-            <input id="live-start-notifications-toggle" type="checkbox">
-            <span>提醒</span>
-          </label>
-        </div>
-      </section>
-
-      <section class="control-section">
-        <div class="control-section-title">聚合走势</div>
-        <div class="trend-controls">
-          <div class="trend-button-row aggregate-trend-button-row">
-            <button id="overview-trend-toggle" class="trend-toggle" title="展开直播中主播总览走势">总览</button>
-            <button id="history-trend-toggle" class="trend-toggle" title="按日期查询历史在线人数走势">历史</button>
+      <div id="room-list-content" class="subpanel-content room-list-panel-content">
+        <section class="list-controls" aria-label="主列表控制">
+          <div class="display-controls">
+            <button id="display-mode-toggle" class="mode-toggle" title="切换展示模式">简略</button>
+            <div class="status-filter" role="group" aria-label="主播状态筛选">
+              <button id="filter-all-button" title="显示全部主播">全部</button>
+              <button id="filter-live-button" title="只显示开播主播">开播</button>
+              <button id="filter-offline-button" title="只显示未开播主播">未开播</button>
+            </div>
           </div>
-        </div>
-      </section>
+          <div class="list-trend-controls">
+            <button id="trend-toggle" class="trend-toggle" title="展开在线人数走势">小图</button>
+            <label class="trend-range-field">
+              <span id="trend-window-label">最近 1 分钟</span>
+              <input id="trend-window-range" type="range" min="1" max="360" step="1" value="1">
+            </label>
+          </div>
+        </section>
+
+        <section id="control-panel" class="control-panel collapsed" aria-label="列表配置" aria-hidden="true">
+          <section class="control-section">
+            <div class="control-section-title">排序</div>
+            <div class="sort-filter-controls">
+              <label class="sort-field">
+                <span>字段</span>
+                <select id="sort-field-select">
+                  <option value="default">默认顺序</option>
+                  <option value="live">是否开播</option>
+                  <option value="online">在线人数</option>
+                  <option value="guard">舰队人数</option>
+                  <option value="fans">粉丝人数</option>
+                  <option value="duration">直播时长</option>
+                </select>
+              </label>
+              <button id="sort-direction-toggle" class="ghost-button" title="切换排序方向">大到小</button>
+            </div>
+          </section>
+
+          <section class="control-section">
+            <div class="control-section-title">分组</div>
+            <div class="group-controls">
+              <div id="group-manager" class="group-manager" aria-label="自定义分组"></div>
+            </div>
+          </section>
+
+          <section class="control-section">
+            <div class="control-section-title">刷新</div>
+            <div class="settings-row">
+              <label class="switch">
+                <input id="auto-refresh-toggle" type="checkbox">
+                <span>自动</span>
+              </label>
+              <label class="interval-field">
+                <span>间隔</span>
+                <input id="interval-input" type="number" min="15" step="1">
+                <span>s</span>
+              </label>
+              <label class="switch">
+                <input id="live-start-notifications-toggle" type="checkbox">
+                <span>提醒</span>
+              </label>
+            </div>
+          </section>
+        </section>
+
+        <section id="summary" class="summary"></section>
+        <section id="rooms" class="rooms"></section>
+      </div>
     </section>
 
-    <section id="summary" class="summary"></section>
-    <section id="overview-trend" class="overview-trend hidden" aria-label="直播中主播总览走势"></section>
-    <section id="history-trend" class="overview-trend hidden" aria-label="历史在线人数走势"></section>
-    <section id="rooms" class="rooms"></section>
+    <section id="overview-trend" class="subpanel overview-trend collapsed" aria-label="直播中主播总览走势">
+      <div class="subpanel-titlebar aggregate-panel-titlebar">
+        <button id="overview-trend-toggle" class="subpanel-toggle aggregate-panel-toggle icon-button" type="button" aria-expanded="false" title="展开主播总览" aria-label="展开主播总览" aria-controls="overview-trend-content">
+          <span class="disclosure-icon" aria-hidden="true"></span>
+        </button>
+        <span class="subpanel-title aggregate-panel-title">主播总览</span>
+      </div>
+      <div id="overview-trend-content" class="subpanel-content aggregate-panel-content hidden"></div>
+    </section>
+    <section id="history-trend" class="subpanel overview-trend history-trend collapsed" aria-label="历史在线人数走势">
+      <div class="subpanel-titlebar aggregate-panel-titlebar">
+        <button id="history-trend-toggle" class="subpanel-toggle aggregate-panel-toggle icon-button" type="button" aria-expanded="false" title="展开历史走势" aria-label="展开历史走势" aria-controls="history-trend-content">
+          <span class="disclosure-icon" aria-hidden="true"></span>
+        </button>
+        <span class="subpanel-title aggregate-panel-title">历史走势</span>
+      </div>
+      <div id="history-trend-content" class="subpanel-content aggregate-panel-content hidden"></div>
+    </section>
   </main>
 
   <script nonce="${nonce}" src="${scriptUri}"></script>

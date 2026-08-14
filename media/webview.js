@@ -3,6 +3,7 @@
 
   const openSearchButton = document.getElementById('open-search-button');
   const refreshButton = document.getElementById('refresh-button');
+  const roomListToggle = document.getElementById('room-list-toggle');
   const controlPanelToggle = document.getElementById('control-panel-toggle');
   const controlPanel = document.getElementById('control-panel');
   const displayModeToggle = document.getElementById('display-mode-toggle');
@@ -22,8 +23,12 @@
   const trendWindowRange = document.getElementById('trend-window-range');
   const trendWindowLabel = document.getElementById('trend-window-label');
   const summary = document.getElementById('summary');
+  const roomListPanel = document.getElementById('room-list-panel');
+  const roomListContent = document.getElementById('room-list-content');
   const overviewTrend = document.getElementById('overview-trend');
+  const overviewTrendContent = document.getElementById('overview-trend-content');
   const historyTrend = document.getElementById('history-trend');
+  const historyTrendContent = document.getElementById('history-trend-content');
   const rooms = document.getElementById('rooms');
 
   const TREND_WINDOW_MIN_MINUTES = 1;
@@ -85,6 +90,7 @@
   let sortField = persistedState.sortField;
   let sortDirection = persistedState.sortDirection;
   let statusFilter = persistedState.statusFilter;
+  let roomListExpanded = persistedState.roomListExpanded;
   let controlPanelExpanded = persistedState.controlPanelExpanded;
   let collapsedGroupKeys = new Set(persistedState.collapsedGroupKeys);
   let openRoomGroupEditors = new Set(persistedState.openRoomGroupEditors);
@@ -97,6 +103,12 @@
 
   refreshButton.addEventListener('click', () => {
     vscode.postMessage({ type: 'refresh' });
+  });
+
+  roomListToggle.addEventListener('click', () => {
+    roomListExpanded = !roomListExpanded;
+    updateSubpanelToggle(roomListPanel, roomListContent, roomListToggle, roomListExpanded, '直播间列表');
+    persistUiState();
   });
 
   controlPanelToggle.addEventListener('click', () => {
@@ -163,14 +175,18 @@
 
   overviewTrendToggle.addEventListener('click', () => {
     overviewTrendExpanded = !overviewTrendExpanded;
+    overviewTrend.classList.toggle('collapsed', !overviewTrendExpanded);
+    updateAggregateTrendToggle(overviewTrendToggle, overviewTrendExpanded, '主播总览');
     rerenderLatestSnapshot();
   });
 
   historyTrendToggle.addEventListener('click', () => {
     historyTrendExpanded = !historyTrendExpanded;
+    historyTrend.classList.toggle('collapsed', !historyTrendExpanded);
     if (historyTrendExpanded) {
       requestHistoryDates();
     }
+    updateAggregateTrendToggle(historyTrendToggle, historyTrendExpanded, '历史走势');
     rerenderLatestSnapshot();
   });
 
@@ -317,6 +333,7 @@
     updateGroupControls(snapshot);
     ensureTrendScopes(snapshot);
     updateTrendControls(snapshot);
+    updateSubpanelToggle(roomListPanel, roomListContent, roomListToggle, roomListExpanded, '直播间列表');
     renderOverviewTrend(snapshot);
     renderHistoryTrend();
 
@@ -356,6 +373,29 @@
     if (latestSnapshot) {
       render(latestSnapshot);
     }
+  }
+
+  function updateAggregateTrendToggle(toggle, expanded, label) {
+    const panel = toggle.closest('.subpanel');
+    const contentId = toggle.getAttribute('aria-controls');
+    const content = contentId ? document.getElementById(contentId) : undefined;
+    if (panel && content) {
+      updateSubpanelToggle(panel, content, toggle, expanded, label);
+      return;
+    }
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-label', expanded ? `收起${label}` : `展开${label}`);
+    toggle.title = expanded ? `收起${label}` : `展开${label}`;
+    toggle.classList.toggle('expanded', expanded);
+  }
+
+  function updateSubpanelToggle(panel, content, toggle, expanded, label) {
+    panel.classList.toggle('collapsed', !expanded);
+    content.classList.toggle('hidden', !expanded);
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-label', expanded ? `收起${label}` : `展开${label}`);
+    toggle.title = expanded ? `收起${label}` : `展开${label}`;
+    toggle.classList.toggle('expanded', expanded);
   }
 
   function buildRoomGroupSection(key, title, groupRooms, snapshot, trendWindow) {
@@ -789,13 +829,15 @@
   }
 
   function renderOverviewTrend(snapshot) {
-    overviewTrend.innerHTML = '';
-    overviewTrend.classList.toggle('hidden', !overviewTrendExpanded);
+    overviewTrendContent.innerHTML = '';
+    overviewTrendContent.classList.toggle('hidden', !overviewTrendExpanded);
+    overviewTrend.classList.toggle('collapsed', !overviewTrendExpanded);
+    updateAggregateTrendToggle(overviewTrendToggle, overviewTrendExpanded, '主播总览');
     if (!overviewTrendExpanded) {
       return;
     }
 
-    overviewTrend.append(buildOverviewTrend(snapshot));
+    overviewTrendContent.append(buildOverviewTrend(snapshot));
   }
 
   function buildOverviewTrend(snapshot) {
@@ -804,10 +846,6 @@
 
     const header = document.createElement('div');
     header.className = 'overview-trend-header';
-
-    const title = document.createElement('div');
-    title.className = 'overview-trend-title';
-    title.textContent = '主播总览';
 
     const overviewWindow = getOverviewTrendWindow(snapshot);
     const modeControls = document.createElement('div');
@@ -846,7 +884,7 @@
     });
 
     rangeField.append(buildTrendFieldHeading('时间范围', rangeLabel), range);
-    header.append(title, scopeField, rangeField);
+    header.append(scopeField, rangeField);
     panel.append(header);
 
     const candidateRooms = getOverviewCandidateRoomsForScopes(
@@ -898,13 +936,15 @@
   }
 
   function renderHistoryTrend() {
-    historyTrend.innerHTML = '';
-    historyTrend.classList.toggle('hidden', !historyTrendExpanded);
+    historyTrendContent.innerHTML = '';
+    historyTrendContent.classList.toggle('hidden', !historyTrendExpanded);
+    historyTrend.classList.toggle('collapsed', !historyTrendExpanded);
+    updateAggregateTrendToggle(historyTrendToggle, historyTrendExpanded, '历史走势');
     if (!historyTrendExpanded) {
       return;
     }
 
-    historyTrend.append(buildHistoryTrend());
+    historyTrendContent.append(buildHistoryTrend());
   }
 
   function buildHistoryTrend() {
@@ -913,10 +953,6 @@
 
     const header = document.createElement('div');
     header.className = 'history-trend-header';
-
-    const title = document.createElement('div');
-    title.className = 'overview-trend-title';
-    title.textContent = '历史走势';
 
     const modeControls = document.createElement('div');
     modeControls.className = 'overview-mode-controls history-mode-controls';
@@ -932,7 +968,7 @@
 
     const datePicker = buildHistoryCalendar();
     const timeControls = buildHistoryTimeControls();
-    header.append(title, scopeField, datePicker, timeControls);
+    header.append(scopeField, datePicker, timeControls);
     panel.append(header);
 
     if (historyLoading) {
@@ -2003,6 +2039,7 @@
 
   function persistUiState() {
     vscode.setState({
+      roomListExpanded,
       controlPanelExpanded,
       displayMode,
       sortField,
@@ -2030,6 +2067,7 @@
   function normalizePersistedState(state) {
     const safeState = state && typeof state === 'object' ? state : {};
     return {
+      roomListExpanded: safeState.roomListExpanded !== false,
       controlPanelExpanded: Boolean(safeState.controlPanelExpanded),
       displayMode: ['detail', 'compact'].includes(safeState.displayMode) ? safeState.displayMode : 'detail',
       sortField: ['default', 'live', 'online', 'guard', 'fans', 'duration'].includes(safeState.sortField)
