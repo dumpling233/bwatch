@@ -49,7 +49,9 @@
   const TREND_CHART_MIN_WIDTH = 360;
   const TREND_CHART_HEIGHT = 86;
   const OVERVIEW_CHART_MIN_WIDTH = 360;
-  const OVERVIEW_CHART_HEIGHT = 236;
+  const AGGREGATE_CHART_DEFAULT_HEIGHT = 240;
+  const AGGREGATE_CHART_MIN_HEIGHT = 160;
+  const AGGREGATE_CHART_MAX_HEIGHT = 640;
   const HISTORY_DAY_START_MINUTE = 0;
   const HISTORY_DAY_END_MINUTE = 23 * 60 + 59;
   const OVERVIEW_RANGE_MODES = ['all', 'live', 'withData'];
@@ -83,6 +85,7 @@
   let trendWindowMinutes = persistedState.trendWindowMinutes;
   let overviewTrendExpanded = persistedState.overviewTrendExpanded;
   let overviewTrendWindowMinutes = persistedState.overviewTrendWindowMinutes;
+  let overviewTrendHeight = persistedState.overviewTrendHeight;
   let overviewRangeScopes = new Set(persistedState.overviewRangeScopes);
   let overviewAggregateScopes = new Set(persistedState.overviewAggregateScopes);
   let overviewHiddenRoomIds = new Set(persistedState.overviewHiddenRoomIds);
@@ -90,6 +93,7 @@
   let historySelectedDate = persistedState.historySelectedDate;
   let historyStartMinute = persistedState.historyStartMinute;
   let historyEndMinute = persistedState.historyEndMinute;
+  let historyTrendHeight = persistedState.historyTrendHeight;
   let historyRangeScopes = new Set(persistedState.historyRangeScopes);
   let historyAggregateScopes = new Set(persistedState.historyAggregateScopes);
   let historyHiddenRoomIds = new Set(persistedState.historyHiddenRoomIds);
@@ -257,6 +261,16 @@
     renderHistoryTrend();
   }
 
+  function ensureHistoryTrendExpanded() {
+    if (historyTrendExpanded) {
+      return;
+    }
+
+    historyTrendExpanded = true;
+    updateAggregateTrendToggle(historyTrendToggle, historyTrendExpanded, '历史走势');
+    persistUiState();
+  }
+
   function formatLocalDateKey(timestampMs) {
     const date = new Date(timestampMs);
     if (!Number.isFinite(date.getTime())) {
@@ -289,10 +303,11 @@
   }
 
   function requestHistoryDate() {
-    if (!historyTrendExpanded || !historySelectedDate) {
+    if (!historySelectedDate) {
       return;
     }
 
+    ensureHistoryTrendExpanded();
     currentHistoryDateRequestId += 1;
     historyLoading = true;
     historyError = '';
@@ -334,10 +349,10 @@
       return;
     }
 
-    historyData = message.history;
+    historyData = normalizeHistoryQueryResult(message.history, historySelectedDate);
     historyError = message.error || '';
     historyLoading = false;
-    pruneHistoryHiddenRoomIds(historyData?.rooms || []);
+    pruneHistoryHiddenRoomIds(historyData.rooms);
     persistUiState();
     renderHistoryTrend();
   }
@@ -584,6 +599,49 @@
 
     overviewTrendWindowMinutes = minutes;
     rerenderLatestSnapshot();
+  }
+
+  function buildAggregateChartHeightControl(chartKind) {
+    const isOverview = chartKind === 'overview';
+    const currentHeight = isOverview ? overviewTrendHeight : historyTrendHeight;
+    const field = document.createElement('label');
+    field.className = 'overview-range-field aggregate-chart-height-field';
+
+    const valueLabel = document.createElement('span');
+    valueLabel.className = 'trend-field-value';
+    valueLabel.textContent = `${currentHeight}px`;
+
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = String(AGGREGATE_CHART_MIN_HEIGHT);
+    range.max = String(AGGREGATE_CHART_MAX_HEIGHT);
+    range.step = '10';
+    range.value = String(currentHeight);
+    range.setAttribute('aria-label', `${isOverview ? '主播总览' : '历史走势'}图表高度`);
+    range.addEventListener('input', () => {
+      const height = clampAggregateChartHeight(Number(range.value));
+      range.value = String(height);
+      valueLabel.textContent = `${height}px`;
+    });
+    range.addEventListener('change', () => {
+      commitAggregateChartHeight(chartKind, Number(range.value));
+    });
+
+    field.append(buildTrendFieldHeading('图表高度', valueLabel), range);
+    return field;
+  }
+
+  function commitAggregateChartHeight(chartKind, value) {
+    const height = clampAggregateChartHeight(value);
+    if (chartKind === 'overview') {
+      overviewTrendHeight = height;
+      rerenderLatestSnapshot();
+      return;
+    }
+
+    historyTrendHeight = height;
+    persistUiState();
+    renderHistoryTrend();
   }
 
   function cleanupResponsiveCharts() {
@@ -924,7 +982,7 @@
     });
 
     rangeField.append(buildTrendFieldHeading('时间范围', rangeLabel), range);
-    header.append(scopeField, rangeField);
+    header.append(scopeField, rangeField, buildAggregateChartHeightControl('overview'));
     panel.append(header);
 
     const candidateRooms = getOverviewCandidateRoomsForScopes(
@@ -947,7 +1005,7 @@
     );
     const series = [...roomSeries, ...aggregateSeries];
     if (series.length === 0) {
-      panel.append(overviewPlaceholder(getOverviewEmptyText()));
+      panel.append(overviewPlaceholder(getOverviewEmptyText(), overviewTrendHeight));
       return panel;
     }
 
@@ -960,18 +1018,18 @@
     );
 
     if (visibleSeries.length === 0) {
-      panel.append(overviewPlaceholder('已隐藏全部主播'));
+      panel.append(overviewPlaceholder('已隐藏全部主播', overviewTrendHeight));
       panel.append(overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries));
       return panel;
     }
 
     if (!hasDrawableLine || !scale) {
-      panel.append(overviewPlaceholder('数据积累中'));
+      panel.append(overviewPlaceholder('数据积累中', overviewTrendHeight));
       panel.append(overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries));
       return panel;
     }
 
-    panel.append(buildOverviewChart(visibleSeries, overviewWindow, scale), overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries));
+    panel.append(buildOverviewChart(visibleSeries, overviewWindow, scale, overviewTrendHeight), overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries));
     return panel;
   }
 
@@ -984,7 +1042,60 @@
       return;
     }
 
-    historyTrendContent.append(buildHistoryTrend());
+    try {
+      historyTrendContent.append(buildHistoryTrend());
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      console.error('历史走势渲染失败', error);
+      historyTrendContent.append(overviewPlaceholder(`历史走势渲染失败${detail}`, historyTrendHeight));
+    }
+  }
+
+  function normalizeHistoryQueryResult(value, fallbackDate = '') {
+    const safeValue = value && typeof value === 'object' ? value : {};
+    const date = typeof safeValue.date === 'string' ? safeValue.date : fallbackDate;
+    const startMs = Number.isFinite(safeValue.startMs) ? safeValue.startMs : 0;
+    const endMs = Number.isFinite(safeValue.endMs) ? safeValue.endMs : startMs;
+    const rooms = (Array.isArray(safeValue.rooms) ? safeValue.rooms : [])
+      .map((room) => {
+        if (!room || typeof room !== 'object') {
+          return undefined;
+        }
+
+        const roomId = String(room.roomId ?? '').trim();
+        if (!roomId) {
+          return undefined;
+        }
+
+        const anchorName = typeof room.anchorName === 'string' && room.anchorName.trim()
+          ? room.anchorName.trim()
+          : roomId;
+        const pointsByTimestamp = new Map();
+        for (const point of Array.isArray(room.points) ? room.points : []) {
+          if (!Array.isArray(point) || point.length !== 2) {
+            continue;
+          }
+
+          const timestamp = point[0];
+          const online = point[1];
+          if (!Number.isFinite(timestamp)) {
+            continue;
+          }
+          if (online !== null && !(typeof online === 'number' && Number.isFinite(online) && online >= 0)) {
+            continue;
+          }
+          pointsByTimestamp.set(timestamp, [timestamp, online]);
+        }
+
+        return {
+          roomId,
+          anchorName,
+          points: Array.from(pointsByTimestamp.values()).sort((left, right) => left[0] - right[0])
+        };
+      })
+      .filter(Boolean);
+
+    return { date, startMs, endMs, rooms };
   }
 
   function buildHistoryTrend() {
@@ -996,7 +1107,7 @@
 
     const modeControls = document.createElement('div');
     modeControls.className = 'overview-mode-controls history-mode-controls';
-    const historyRooms = historyData?.rooms || [];
+    const historyRooms = Array.isArray(historyData?.rooms) ? historyData.rooms : [];
     const getHistoryScopeRooms = (scope) => getHistoryCandidateRoomsForScope(historyRooms, scope);
     appendScopeControl(modeControls, '全部', 'all', 'history', '加入或移出所选日期和时间段内的全部直播间历史', getHistoryScopeRooms('all'), latestSnapshot);
     appendScopeControl(modeControls, '有数据', 'withData', 'history', '加入或移出所选时间段内存在大于 0 在线人数采样的直播间', getHistoryScopeRooms('withData'), latestSnapshot);
@@ -1008,36 +1119,36 @@
 
     const datePicker = buildHistoryCalendar();
     const timeControls = buildHistoryTimeControls();
-    header.append(scopeField, datePicker, timeControls);
+    header.append(scopeField, datePicker, timeControls, buildAggregateChartHeightControl('history'));
     panel.append(header);
 
     if (historyLoading) {
-      panel.append(overviewPlaceholder('正在读取历史数据'));
+      panel.append(overviewPlaceholder('正在读取历史数据', historyTrendHeight));
       return panel;
     }
 
     if (historyError) {
-      panel.append(overviewPlaceholder(historyError));
+      panel.append(overviewPlaceholder(historyError, historyTrendHeight));
       return panel;
     }
 
     if (historyDates.length === 0) {
-      panel.append(overviewPlaceholder('暂无本地历史数据'));
+      panel.append(overviewPlaceholder('暂无本地历史数据', historyTrendHeight));
       return panel;
     }
 
     if (!historySelectedDate || !historyData) {
-      panel.append(overviewPlaceholder('请选择有数据的日期'));
+      panel.append(overviewPlaceholder('请选择有数据的日期', historyTrendHeight));
       return panel;
     }
 
     const historyWindow = {
       start: historyData.startMs,
-      end: historyData.endMs,
-      windowMinutes: Math.max(1, Math.round((historyData.endMs - historyData.startMs + 1) / 60000))
+      end: Math.max(historyData.startMs, historyData.endMs),
+      windowMinutes: Math.max(1, Math.round((Math.max(historyData.startMs, historyData.endMs) - historyData.startMs + 1) / 60000))
     };
-    const candidateRooms = getHistoryCandidateRoomsForScopes(historyData.rooms, historyRangeScopes);
-    const roomColorIndexes = new Map(historyData.rooms.map((room, index) => [room.roomId, index]));
+    const candidateRooms = getHistoryCandidateRoomsForScopes(historyRooms, historyRangeScopes);
+    const roomColorIndexes = new Map(historyRooms.map((room, index) => [room.roomId, index]));
     const buildRoomSeries = (rooms) => rooms.map((room, index) => ({
       room: {
         roomId: room.roomId,
@@ -1048,11 +1159,11 @@
     }));
     const roomSeries = buildRoomSeries(candidateRooms);
     const aggregateSeries = buildAggregateSeries(historyAggregateScopes, (scope) =>
-      buildRoomSeries(getHistoryCandidateRoomsForScope(historyData.rooms, scope)), latestSnapshot
+      buildRoomSeries(getHistoryCandidateRoomsForScope(historyRooms, scope)), latestSnapshot
     );
     const series = [...roomSeries, ...aggregateSeries];
     if (series.length === 0) {
-      panel.append(overviewPlaceholder(getHistoryEmptyText()));
+      panel.append(overviewPlaceholder(getHistoryEmptyText(), historyTrendHeight));
       return panel;
     }
 
@@ -1064,18 +1175,18 @@
     );
 
     if (visibleSeries.length === 0) {
-      panel.append(overviewPlaceholder('已隐藏全部主播'));
+      panel.append(overviewPlaceholder('已隐藏全部主播', historyTrendHeight));
       panel.append(overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries));
       return panel;
     }
 
     if (!hasDrawableLine || !scale) {
-      panel.append(overviewPlaceholder('数据积累中'));
+      panel.append(overviewPlaceholder('数据积累中', historyTrendHeight));
       panel.append(overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries));
       return panel;
     }
 
-    panel.append(buildOverviewChart(visibleSeries, historyWindow, scale), overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries));
+    panel.append(buildOverviewChart(visibleSeries, historyWindow, scale, historyTrendHeight), overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries));
     return panel;
   }
 
@@ -1098,6 +1209,7 @@
       historySelectedDate = input.value;
       historyHiddenRoomIds.clear();
       persistUiState();
+      ensureHistoryTrendExpanded();
       requestHistoryDate();
     });
 
@@ -1127,6 +1239,7 @@
         historySelectedDate = item.date;
         historyHiddenRoomIds.clear();
         persistUiState();
+        ensureHistoryTrendExpanded();
         requestHistoryDate();
       });
       list.append(button);
@@ -1537,35 +1650,39 @@
     return '已选范围暂无可展示的直播间';
   }
 
-  function overviewPlaceholder(text) {
+  function overviewPlaceholder(text, height = AGGREGATE_CHART_DEFAULT_HEIGHT) {
     const placeholder = document.createElement('div');
     placeholder.className = 'overview-placeholder';
     placeholder.textContent = text;
+    placeholder.style.height = `${clampAggregateChartHeight(height) + 2}px`;
     return placeholder;
   }
 
-  function buildOverviewChart(series, trendWindow, scale) {
+  function buildOverviewChart(series, trendWindow, scale, height = AGGREGATE_CHART_DEFAULT_HEIGHT) {
     const paddingLeft = 56;
     const paddingRight = 14;
     const paddingTop = 22;
     const paddingBottom = 32;
     const chart = document.createElement('div');
     chart.className = 'overview-chart';
+    const chartHeight = clampAggregateChartHeight(height);
+    const chartScale = getAggregateChartScale(scale);
+    chart.style.height = `${chartHeight + 2}px`;
 
     const tooltip = document.createElement('div');
     tooltip.className = 'overview-tooltip hidden';
     chart.append(tooltip);
     const chartState = {
       width: OVERVIEW_CHART_MIN_WIDTH,
-      height: OVERVIEW_CHART_HEIGHT,
+      height: chartHeight,
       guide: undefined,
       pointsGroup: undefined
     };
 
     observeResponsiveSvg(chart, OVERVIEW_CHART_MIN_WIDTH, (width) => {
-      const svg = buildOverviewSvg(width, OVERVIEW_CHART_HEIGHT, series, trendWindow, scale, paddingLeft, paddingRight, paddingTop, paddingBottom);
+      const svg = buildOverviewSvg(width, chartHeight, series, trendWindow, chartScale, paddingLeft, paddingRight, paddingTop, paddingBottom);
       chartState.width = width;
-      chartState.height = OVERVIEW_CHART_HEIGHT;
+      chartState.height = chartHeight;
       chartState.guide = svg.guide;
       chartState.pointsGroup = svg.pointsGroup;
       chart.replaceChildren(svg.element, tooltip);
@@ -1576,7 +1693,7 @@
         return;
       }
 
-      updateOverviewHover(event, chart, chartState.guide, chartState.pointsGroup, tooltip, series, trendWindow, scale, chartState.width, chartState.height, paddingLeft, paddingRight, paddingTop, paddingBottom);
+      updateOverviewHover(event, chart, chartState.guide, chartState.pointsGroup, tooltip, series, trendWindow, chartScale, chartState.width, chartState.height, paddingLeft, paddingRight, paddingTop, paddingBottom);
     });
     chart.addEventListener('pointerleave', () => {
       chartState.guide?.classList.add('hidden');
@@ -1596,17 +1713,6 @@
     svg.setAttribute('aria-label', '直播中主播在线人数总览走势');
 
     appendTrendAxis(svg, scale, trendWindow, width, height, paddingLeft, paddingRight, paddingTop, paddingBottom, 'overview');
-
-    for (const yRatio of [0, 0.25, 0.5, 0.75, 1]) {
-      const y = paddingTop + yRatio * (height - paddingTop - paddingBottom);
-      const grid = createSvgElement('line');
-      grid.setAttribute('x1', String(paddingLeft));
-      grid.setAttribute('x2', String(width - paddingRight));
-      grid.setAttribute('y1', formatSvgNumber(y));
-      grid.setAttribute('y2', formatSvgNumber(y));
-      grid.setAttribute('class', 'overview-grid-line');
-      svg.append(grid);
-    }
 
     for (const item of series) {
       const segments = buildTrendSegments(item.points, trendWindow, scale, width, height, paddingLeft, paddingRight, paddingTop, paddingBottom);
@@ -1802,6 +1908,36 @@
     const plotTop = paddingTop;
     const plotBottom = height - paddingBottom;
 
+    const plotWidth = Math.max(1, plotRight - plotLeft);
+    const plotHeight = Math.max(1, plotBottom - plotTop);
+    const yTicks = buildAdaptiveNumberTicks(scale, plotHeight);
+    const xTicks = buildAdaptiveTimeTicks(trendWindow, plotWidth);
+
+    for (const value of yTicks) {
+      const ratio = (value - scale.min) / Math.max(1, scale.max - scale.min);
+      const y = plotBottom - ratio * plotHeight;
+      const grid = createSvgElement('line');
+      grid.setAttribute('x1', String(plotLeft));
+      grid.setAttribute('x2', String(plotRight));
+      grid.setAttribute('y1', formatSvgNumber(y));
+      grid.setAttribute('y2', formatSvgNumber(y));
+      grid.setAttribute('class', `${prefix}-grid-line`);
+      svg.append(grid, svgText(formatNumber(value), plotLeft - 6, y + 4, `${prefix}-axis-text`, 'end'));
+    }
+
+    for (const timestamp of xTicks) {
+      const ratio = (timestamp - trendWindow.start) / Math.max(1, trendWindow.end - trendWindow.start);
+      const x = plotLeft + ratio * plotWidth;
+      const grid = createSvgElement('line');
+      grid.setAttribute('x1', formatSvgNumber(x));
+      grid.setAttribute('x2', formatSvgNumber(x));
+      grid.setAttribute('y1', String(plotTop));
+      grid.setAttribute('y2', String(plotBottom));
+      grid.setAttribute('class', `${prefix}-grid-line`);
+      const anchor = timestamp === trendWindow.start ? 'start' : timestamp === trendWindow.end ? 'end' : 'middle';
+      svg.append(grid, svgText(formatShortTime(timestamp), x, height - 6, `${prefix}-axis-text`, anchor));
+    }
+
     const yAxis = createSvgElement('line');
     yAxis.setAttribute('x1', String(plotLeft));
     yAxis.setAttribute('x2', String(plotLeft));
@@ -1817,12 +1953,94 @@
     xAxis.setAttribute('class', `${prefix}-axis-line`);
 
     svg.append(yAxis, xAxis);
-    svg.append(
-      svgText(formatNumber(scale.max), plotLeft - 6, plotTop + 4, `${prefix}-axis-text`, 'end'),
-      svgText(formatNumber(scale.min), plotLeft - 6, plotBottom, `${prefix}-axis-text`, 'end'),
-      svgText(formatShortTime(trendWindow.start), plotLeft, height - 6, `${prefix}-axis-text`, 'start'),
-      svgText(formatShortTime(trendWindow.end), plotRight, height - 6, `${prefix}-axis-text`, 'end')
-    );
+  }
+
+  function getAggregateChartScale(scale) {
+    if (scale.min >= 0 && scale.max > 0) {
+      return { min: 0, max: scale.max };
+    }
+    return scale;
+  }
+
+  function buildAdaptiveNumberTicks(scale, plotHeight) {
+    const range = scale.max - scale.min;
+    if (!Number.isFinite(range) || range <= 0) {
+      return [scale.min, scale.max];
+    }
+
+    const targetIntervals = Math.max(2, Math.min(10, Math.floor(plotHeight / 58)));
+    const step = getNiceAxisStep(range / targetIntervals);
+    const ticks = [scale.min];
+    const firstTick = Math.ceil(scale.min / step) * step;
+    for (let value = firstTick; value < scale.max; value += step) {
+      const normalized = Number(value.toPrecision(12));
+      if (normalized > scale.min && normalized < scale.max) {
+        ticks.push(normalized);
+      }
+    }
+    ticks.push(scale.max);
+    return filterAxisTicksBySpacing(ticks, scale.min, scale.max, plotHeight, 34);
+  }
+
+  function getNiceAxisStep(rawStep) {
+    if (!Number.isFinite(rawStep) || rawStep <= 0) {
+      return 1;
+    }
+
+    const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+    const normalized = rawStep / magnitude;
+    const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+    return multiplier * magnitude;
+  }
+
+  function buildAdaptiveTimeTicks(trendWindow, plotWidth) {
+    const duration = Math.max(1, trendWindow.end - trendWindow.start);
+    const targetIntervals = Math.max(2, Math.min(12, Math.floor(plotWidth / 96)));
+    const stepCandidates = [
+      60_000,
+      2 * 60_000,
+      5 * 60_000,
+      10 * 60_000,
+      15 * 60_000,
+      30 * 60_000,
+      60 * 60_000,
+      2 * 60 * 60_000,
+      3 * 60 * 60_000,
+      6 * 60 * 60_000,
+      12 * 60 * 60_000,
+      24 * 60 * 60_000
+    ];
+    const step = stepCandidates.find((candidate) => duration / candidate <= targetIntervals)
+      || stepCandidates[stepCandidates.length - 1];
+    const ticks = [trendWindow.start];
+    const firstTick = Math.ceil(trendWindow.start / step) * step;
+    for (let timestamp = firstTick; timestamp < trendWindow.end; timestamp += step) {
+      if (timestamp > trendWindow.start) {
+        ticks.push(timestamp);
+      }
+    }
+    ticks.push(trendWindow.end);
+    return filterAxisTicksBySpacing(ticks, trendWindow.start, trendWindow.end, plotWidth, 72);
+  }
+
+  function filterAxisTicksBySpacing(ticks, min, max, pixelSize, minSpacing) {
+    const uniqueTicks = Array.from(new Set(ticks)).sort((left, right) => left - right);
+    if (uniqueTicks.length <= 2 || max <= min) {
+      return uniqueTicks;
+    }
+
+    const result = [uniqueTicks[0]];
+    const lastTick = uniqueTicks[uniqueTicks.length - 1];
+    for (const tick of uniqueTicks.slice(1, -1)) {
+      const previous = result[result.length - 1];
+      const previousDistance = ((tick - previous) / (max - min)) * pixelSize;
+      const endDistance = ((lastTick - tick) / (max - min)) * pixelSize;
+      if (previousDistance >= minSpacing && endDistance >= minSpacing) {
+        result.push(tick);
+      }
+    }
+    result.push(lastTick);
+    return result;
   }
 
   function svgText(text, x, y, className, anchor) {
@@ -2092,6 +2310,7 @@
       trendWindowMinutes,
       overviewTrendExpanded,
       overviewTrendWindowMinutes,
+      overviewTrendHeight,
       overviewRangeScopes: Array.from(overviewRangeScopes),
       overviewAggregateScopes: Array.from(overviewAggregateScopes),
       overviewHiddenRoomIds: Array.from(overviewHiddenRoomIds),
@@ -2101,6 +2320,7 @@
       historySelectedDate,
       historyStartMinute,
       historyEndMinute,
+      historyTrendHeight,
       historyRangeScopes: Array.from(historyRangeScopes),
       historyAggregateScopes: Array.from(historyAggregateScopes),
       historyHiddenRoomIds: Array.from(historyHiddenRoomIds)
@@ -2122,6 +2342,7 @@
       trendWindowMinutes: clampTrendWindowMinutes(Number(safeState.trendWindowMinutes)),
       overviewTrendExpanded: Boolean(safeState.overviewTrendExpanded),
       overviewTrendWindowMinutes: clampTrendWindowMinutes(Number(safeState.overviewTrendWindowMinutes)),
+      overviewTrendHeight: clampAggregateChartHeight(Number(safeState.overviewTrendHeight)),
       overviewRangeScopes: normalizePersistedRangeScopes(
         safeState.overviewRangeScopes,
         safeState.overviewRangeMode,
@@ -2144,6 +2365,7 @@
       historyTrendExpanded: Boolean(safeState.historyTrendExpanded),
       historySelectedDate: typeof safeState.historySelectedDate === 'string' ? safeState.historySelectedDate : '',
       ...normalizePersistedHistoryRange(safeState),
+      historyTrendHeight: clampAggregateChartHeight(Number(safeState.historyTrendHeight)),
       historyRangeScopes: normalizePersistedRangeScopes(
         safeState.historyRangeScopes,
         safeState.historyRangeMode,
@@ -2402,6 +2624,13 @@
     return Math.min(TREND_WINDOW_MAX_MINUTES, Math.max(TREND_WINDOW_MIN_MINUTES, Math.floor(value)));
   }
 
+  function clampAggregateChartHeight(value) {
+    if (!Number.isFinite(value)) {
+      return AGGREGATE_CHART_DEFAULT_HEIGHT;
+    }
+    return Math.min(AGGREGATE_CHART_MAX_HEIGHT, Math.max(AGGREGATE_CHART_MIN_HEIGHT, Math.round(value)));
+  }
+
   function clampHistoryMinute(value, fallback) {
     if (!Number.isFinite(value)) {
       return fallback;
@@ -2418,13 +2647,23 @@
   }
 
   function getScaleForPoints(points) {
-    const values = points.map(([, online]) => online).filter((online) => typeof online === 'number');
-    if (values.length < 2) {
+    let count = 0;
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (const [, online] of points) {
+      if (typeof online !== 'number') {
+        continue;
+      }
+
+      count += 1;
+      min = Math.min(min, online);
+      max = Math.max(max, online);
+    }
+
+    if (count < 2) {
       return undefined;
     }
 
-    let min = Math.min(...values);
-    let max = Math.max(...values);
     if (min === max) {
       const padding = Math.max(1, Math.ceil(max * 0.05));
       min = Math.max(0, min - padding);

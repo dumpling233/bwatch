@@ -831,7 +831,7 @@ button:hover {
   position: relative;
   box-sizing: border-box;
   width: 100%;
-  height: 238px;
+  height: 242px;
   min-width: 360px;
   overflow: hidden;
   border: 1px solid var(--vscode-panel-border);
@@ -843,13 +843,15 @@ button:hover {
   display: block;
   width: 100%;
   min-width: 360px;
-  height: 236px;
+  height: 100%;
 }
 
+.trend-grid-line,
 .overview-grid-line {
   stroke: var(--vscode-panel-border);
   stroke-width: 1;
   opacity: 0.72;
+  vector-effect: non-scaling-stroke;
 }
 
 .overview-trend-line {
@@ -936,7 +938,7 @@ button:hover {
   display: flex;
   box-sizing: border-box;
   width: 100%;
-  height: 238px;
+  height: 242px;
   min-height: 0;
   align-items: center;
   justify-content: center;

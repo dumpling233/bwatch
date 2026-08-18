@@ -207,6 +207,140 @@ test('history dates reload once when an expanded history panel crosses a local d
   assert.doesNotMatch(extractFunction(source, 'formatLocalDateKey', 'shouldReloadHistoryDates'), /toISOString/);
 });
 
+test('history date requests restore the history trend to expanded state before loading', () => {
+  const source = readWebviewSource();
+  let persistCount = 0;
+  let toggleArgs: { expanded: boolean; label: string } | undefined;
+  const context = vm.createContext({
+    historyTrendExpanded: false,
+    historyTrendToggle: {},
+    updateAggregateTrendToggle: (_toggle: unknown, expanded: boolean, label: string) => {
+      toggleArgs = { expanded, label };
+    },
+    persistUiState: () => {
+      persistCount += 1;
+    }
+  });
+  vm.runInContext(extractFunction(source, 'ensureHistoryTrendExpanded', 'formatLocalDateKey'), context);
+
+  const ensureHistoryTrendExpanded = vm.runInContext('ensureHistoryTrendExpanded', context) as () => void;
+  ensureHistoryTrendExpanded();
+
+  assert.equal(vm.runInContext('historyTrendExpanded', context), true);
+  assert.deepEqual(toggleArgs, { expanded: true, label: '历史走势' });
+  assert.equal(persistCount, 1);
+});
+
+test('history query results are normalized before rendering', () => {
+  const source = readWebviewSource();
+  const context = vm.createContext({ Map, Array, Number, String });
+  vm.runInContext(extractFunction(source, 'normalizeHistoryQueryResult', 'buildHistoryTrend'), context);
+
+  const normalize = vm.runInContext('normalizeHistoryQueryResult', context) as (
+    value: unknown,
+    fallbackDate: string
+  ) => {
+    date: string;
+    startMs: number;
+    endMs: number;
+    rooms: Array<{ roomId: string; anchorName: string; points: Array<[number, number | null]> }>;
+  };
+  const result = normalize({
+    date: '2026-08-16',
+    startMs: 100,
+    endMs: 'invalid',
+    rooms: [
+      null,
+      {
+        roomId: 123,
+        anchorName: '  主播  ',
+        points: [[300, 30], [100, 10], [200, null], [100, null], ['invalid', 8], [400, '8']]
+      },
+      { roomId: '', points: [[500, 50]] }
+    ]
+  }, 'fallback');
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+    date: '2026-08-16',
+    startMs: 100,
+    endMs: 100,
+    rooms: [{
+      roomId: '123',
+      anchorName: '主播',
+      points: [[100, null], [200, null], [300, 30]]
+    }]
+  });
+});
+
+test('trend scale handles large historical datasets without spreading arguments', () => {
+  const source = readWebviewSource();
+  const context = vm.createContext({ Math, Number });
+  vm.runInContext(extractFunction(source, 'getScaleForPoints', 'createSvgElement'), context);
+  const getScale = vm.runInContext('getScaleForPoints', context) as (
+    points: Array<[number, number | null]>
+  ) => { min: number; max: number } | undefined;
+  const points = Array.from({ length: 100_000 }, (_, index) => [index, index % 100] as [number, number]);
+
+  const scale = getScale(points);
+  assert.ok(scale);
+  assert.equal(scale.min, 0);
+  assert.equal(scale.max, 99);
+  assert.doesNotMatch(extractFunction(source, 'getScaleForPoints', 'createSvgElement'), /Math\.(min|max)\(\.\.\.values\)/);
+});
+
+test('overview and history charts persist independently adjustable heights', () => {
+  const source = readWebviewSource();
+  const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
+  const context = vm.createContext({
+    Number,
+    Math,
+    AGGREGATE_CHART_DEFAULT_HEIGHT: 240,
+    AGGREGATE_CHART_MIN_HEIGHT: 160,
+    AGGREGATE_CHART_MAX_HEIGHT: 640
+  });
+  vm.runInContext(extractFunction(source, 'clampAggregateChartHeight', 'clampHistoryMinute'), context);
+  const clampHeight = vm.runInContext('clampAggregateChartHeight', context) as (value: number) => number;
+
+  assert.equal(clampHeight(Number.NaN), 240);
+  assert.equal(clampHeight(100), 160);
+  assert.equal(clampHeight(800), 640);
+  assert.match(source, /overviewTrendHeight:\s*clampAggregateChartHeight/);
+  assert.match(source, /historyTrendHeight:\s*clampAggregateChartHeight/);
+  assert.match(source, /buildAggregateChartHeightControl\('overview'\)/);
+  assert.match(source, /buildAggregateChartHeightControl\('history'\)/);
+  assert.match(source, /chart\.style\.height = `\$\{chartHeight \+ 2\}px`/);
+  assert.match(source, /placeholder\.style\.height = `\$\{clampAggregateChartHeight\(height\) \+ 2\}px`/);
+  assert.match(css, /\.overview-chart svg\s*\{[^}]*height:\s*100%/s);
+});
+
+test('aggregate chart axes add adaptive readable ticks for width and height', () => {
+  const source = readWebviewSource();
+  const context = vm.createContext({ Number, Math, Set, Array });
+  vm.runInContext(extractFunction(source, 'getAggregateChartScale', 'svgText'), context);
+  const getScale = vm.runInContext('getAggregateChartScale', context) as (
+    scale: { min: number; max: number }
+  ) => { min: number; max: number };
+  const numberTicks = vm.runInContext('buildAdaptiveNumberTicks', context) as (
+    scale: { min: number; max: number },
+    plotHeight: number
+  ) => number[];
+  const timeTicks = vm.runInContext('buildAdaptiveTimeTicks', context) as (
+    trendWindow: { start: number; end: number },
+    plotWidth: number
+  ) => number[];
+  const start = new Date(2026, 7, 17, 22, 53).getTime();
+  const end = new Date(2026, 7, 17, 23, 30).getTime();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(getScale({ min: 320, max: 1080 }))), { min: 0, max: 1080 });
+  assert.ok(numberTicks({ min: 0, max: 1080 }, 500).length > numberTicks({ min: 0, max: 1080 }, 110).length);
+  assert.ok(timeTicks({ start, end }, 1000).length > timeTicks({ start, end }, 320).length);
+  assert.equal(numberTicks({ min: 0, max: 1080 }, 190).includes(500), true);
+  assert.equal(timeTicks({ start, end }, 1000).some((timestamp) => new Date(timestamp).getMinutes() % 5 === 0), true);
+  assert.match(extractFunction(source, 'appendTrendAxis', 'getAggregateChartScale'), /buildAdaptiveNumberTicks/);
+  assert.match(extractFunction(source, 'appendTrendAxis', 'getAggregateChartScale'), /buildAdaptiveTimeTicks/);
+  assert.doesNotMatch(extractFunction(source, 'buildOverviewSvg', 'overviewLegend'), /\[0, 0\.25, 0\.5, 0\.75, 1\]/);
+});
+
 test('overview and history trend controls use the same responsive vertical layout', () => {
   const source = readWebviewSource();
   const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
@@ -289,8 +423,8 @@ test('room list operations share one subpanel and advanced controls stay inside 
   assert.match(css, /\.trend-toggle\.active[\s\S]*background:\s*var\(--vscode-button-background\)/);
   assert.match(css, /\.overview-mode-button\s*\{[\s\S]*background:\s*transparent/);
   assert.match(css, /\.overview-mode-button\.active[\s\S]*background:\s*var\(--vscode-button-background\)/);
-  assert.match(css, /\.overview-chart\s*\{[\s\S]*height:\s*238px/);
-  assert.match(css, /\.overview-placeholder\s*\{[\s\S]*height:\s*238px/);
+  assert.match(css, /\.overview-chart\s*\{[\s\S]*height:\s*242px/);
+  assert.match(css, /\.overview-placeholder\s*\{[\s\S]*height:\s*242px/);
   assert.match(css, /\.trend-chart\s*\{[\s\S]*height:\s*91px/);
   assert.match(css, /\.trend-placeholder\s*\{[\s\S]*height:\s*86px/);
   assert.match(css, /\.overview-trend\.collapsed \.aggregate-panel-titlebar\s*\{[\s\S]*border-bottom-color:\s*transparent/);

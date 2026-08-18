@@ -15,8 +15,9 @@ BWatch is a VSCode extension that monitors multiple Bilibili live rooms in the s
 - Add rooms and create groups from compact sidebar icon buttons backed by VSCode native input/quick-pick dialogs.
 - Show total online viewers, guard fleet members, and live/total room counts in every list group header, aligned with the corresponding room columns.
 - Cache long-term online viewer samples locally and expand per-room intraday-style mini trend charts for the latest 1 minute to 6 hours, defaulting to 1 minute.
-- Expand overview and historical charts with colored online viewer lines, multi-select range/group filters, hover values, descending-online legends, and independently selectable total lines for any built-in or custom-group scope.
+- Expand overview and historical charts with colored online viewer lines, independently adjustable chart heights, multi-select range/group filters, hover values, descending-online legends, and independently selectable total lines for any built-in or custom-group scope.
 - Stretch trend chart timelines with the sidebar width while keeping a minimum readable chart width.
+- Add adaptive time and viewer-count axis ticks as aggregate charts become wider or taller, with matching grid lines and overlap-aware spacing.
 - Add, remove, refresh, and open rooms from the sidebar.
 - Enable or disable automatic refresh.
 - Configure refresh interval with a minimum of 15 seconds.
