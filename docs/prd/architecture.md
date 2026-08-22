@@ -2,25 +2,31 @@
 
 ## 系统结构
 
-- 前端/UI：VSCode `WebviewViewProvider` 提供 Activity Bar 侧边栏监控面板，静态资源位于 `media/`；Webview View 注册时启用 `retainContextWhenHidden`，前端通过 VSCode Webview `getState` / `setState` 保存纯 UI 控制状态。
+- 前端/UI：VSCode `WebviewViewProvider` 在 Activity Bar 提供直播监控和实时弹幕两个独立侧边栏 View，静态资源位于 `media/`；Webview View 注册时启用 `retainContextWhenHidden`，前端通过 VSCode Webview `getState` / `setState` 保存纯 UI 控制状态。
 - 扩展宿主：TypeScript VSCode 扩展，入口为 `src/extension.ts`，编译输出到 `out/`。
 - 数据层：不使用数据库；监控房间号、自定义分组和刷新/提醒配置存储在 VSCode 用户设置中，在线人数历史按房间长期保存到 VSCode 扩展本地存储目录。
-- 外部服务：通过 B站直播房间基础信息接口 `xlive/web-room/v1/index/getRoomBaseInfo` 获取房间标题、主播名、开播状态、人气和开播时间；通过 `x/relation/stat?vmid={uid}` 获取主播粉丝数；直播中房间再通过 `xlive/general-interface/v1/rank/getOnlineGoldRank` 获取直播页同款在线观众人数；主播名模糊搜索通过 `x/web-interface/search/type?search_type=live_user` 获取候选直播间，搜索请求携带浏览器兼容请求头、搜索页 URL 编码 `referer` 和访客 cookie；所有 B站请求经过统一网络适配层，可按配置使用 HTTP/HTTPS 代理或自动探测常见 Clash/Mihomo 本地 HTTP 代理端口。
+- 外部服务：通过 B站直播房间基础信息接口 `xlive/web-room/v1/index/getRoomBaseInfo` 获取房间标题、主播名、开播状态、人气和开播时间；通过 `x/relation/stat?vmid={uid}` 获取主播粉丝数；直播中房间再通过 `xlive/general-interface/v1/rank/getOnlineGoldRank` 获取直播页同款在线观众人数；主播名模糊搜索通过 `x/web-interface/search/type?search_type=live_user` 获取候选直播间；实时弹幕机通过 `room/v1/Room/get_info`、`x/web-interface/nav` 和带 WBI 签名的 `xlive/web-room/v1/index/getDanmuInfo` 获取真实房间号、签名密钥、token 和 WebSocket 服务器，再连接 B站直播弹幕服务器。HTTP 请求经过统一网络适配层，WebSocket 按相同代理配置尝试 HTTP/HTTPS 代理候选。
 - 部署方式：作为 VSCode 扩展运行，发布渠道待确认。
 
 ## 主要目录到产品模块的映射
 
 - `src/extension.ts`：扩展激活、命令注册、配置监听、分组配置更新、VSCode 原生输入/候选列表、通知、外部打开和搜索候选已监控状态标记。
-- `src/webviewProvider.ts`：侧边栏 Webview View 的 HTML、图标工具栏消息桥接和状态推送。
+- `src/webviewProvider.ts`：侧边栏 Webview View 的 HTML、主播总览标题栏图标操作消息桥接和状态推送。刷新、搜索添加按钮保留原有 DOM 标识，仅调整所属标题栏。
 - `src/liveMonitor.ts`：直播间轮询、快照管理、开播提醒状态机。
 - `src/onlineHistoryStore.ts`：在线人数历史采样、本地长期文件持久化、最近已知主播名元数据保存、旧 `globalState` 历史迁移、近期快照裁剪、历史日期列表和按日期时间段查询。
 - `src/bilibiliClient.ts`：B站直播接口请求和响应标准化。
+- `src/wbiSigner.ts`：WBI 图片密钥混排、参数规范化和 `w_rid` 签名。
+- `src/danmakuProtocol.ts`：弹幕二进制包编码/可恢复拆包、zlib/Brotli 递归解压、局部错误收集，以及带原始发送时间的 `DANMU_MSG`、Super Chat 与 SC 删除事件标准化。
+- `src/danmakuClient.ts`：单房间弹幕会话、可取消初始化/握手、连接尝试世代隔离、WebSocket 认证、应用心跳、传输层 Ping/Pong 假活检测、业务流延迟检测、服务器优先的单线路轮换、事件循环漂移诊断、普通弹幕/SC 独立队列和自动重连。
+- `src/danmakuStatusBar.ts`：订阅弹幕会话事件并维护 VSCode 底部最新弹幕状态栏项，支持独立启用和隐藏而不改变会话状态。
+- `src/danmakuWebviewProvider.ts`：实时弹幕独立 View、完整监控房间指标快照同步和扩展宿主消息桥。
 - `src/network.ts`：B站请求代理选择、零外部运行时依赖的 HTTP/HTTPS 代理请求封装、auto 本地代理端口候选、`curl` 兜底和网络错误格式化。
 - `src/networkDiagnostics.ts`：命令面板网络诊断，测试各 B站接口并写入 `BWatch` 输出面板。
 - `src/config.ts`：VSCode 配置读取、房间号去重、自定义分组标准化、刷新间隔下限校验。
 - `src/time.ts`：开播时长和刷新时间格式化。
 - `src/test/`：核心逻辑单元测试。
 - `media/`：扩展图标、Webview 样式和前端脚本。
+- `media/danmaku.js`、`media/danmaku.css`：弹幕连接控制、状态栏、当前房间监控指标、普通弹幕/SC 标签与内存列表、清屏和自动滚动界面。
 - `docs/prd/`：PRD 总入口、产品概览、架构、模块文档和独立 PRD 日志。
 
 ## 关键数据流
@@ -33,11 +39,30 @@
 6. `LiveMonitor` 执行开播提醒状态机，触发时将房间号、主播名和直播标题交给扩展通知层；同时把本轮每个房间的在线人数和主播名交给 `OnlineHistoryStore` 追加采样，未开播记为 `0`，在线接口失败或不可用记为 `null`。
 7. `OnlineHistoryStore` 从 VSCode 扩展本地存储目录加载按房间拆分的长期历史文件，并迁移旧版本 `globalState` 中的 `bwatch.onlineHistory.v1` 历史；本地历史文件兼容旧数组格式，新写入格式保存 `points` 和最近已知 `anchorName`；删除或移除监控房间不会删除长期历史。
 8. `LiveMonitor` 将直播间状态、统一刷新时间和当前监控房间最近 24 小时内的 `onlineHistory` 写入 `MonitorSnapshot`，通知 `LiveMonitorWebviewProvider`。
-9. Webview 通过 `postMessage` 接收快照并渲染监控面板；展示模式、主播状态筛选、单主播小图开关和小图时间范围位于不受折叠影响的主列表控制区，折叠控制面板按“排序”“分组”“刷新”分组。主播总览和历史走势各自使用常驻标题栏与展开/收起按钮，标题栏不随内容折叠，只有对应内容区切换隐藏状态；分组管理行使用左右两区布局，名称和房间数相邻位于左侧，拖拽手柄、移动、编辑和删除操作集中在右侧。拖放完成后 Webview 通过 `moveGroupToIndex` 只发送目标分组标识和最终索引，扩展宿主依据当前配置校验并重排 `bwatch.groups`；上下按钮继续通过 `moveGroup` 交换相邻分组。`renameGroup` 请求扩展宿主打开预填当前名称的 VSCode 原生输入框，宿主只更新目标分组的 `name` 并保留稳定 `id`、成员和顺序，配置监听随后同步主列表及总览/历史筛选。主列表按固定 `全部` 分组和自定义分组折叠/展开展示，Webview 按每组当前实际展示房间即时求和在线人数与舰队总人数，并通过与详细/简略主播行对应的 CSS Grid 列显示在分组表头，缺失指标按 `0` 贡献且不写回快照；分组折叠和房间分组编辑器展开状态保存在 Webview 状态中。开启单主播走势时用 SVG 按统一时间窗口绘制每个主播的在线人数迷你走势图；开启总览走势时，Webview 以范围集合维护 `全部`、`开播`、`有数据` 和自定义分组的多选状态，按房间号求各范围成员并集，再按监控列表顺序去重绘制。范围按钮和合计虚拟序列复用同一成员状态格式化逻辑，根据各自实际成员与当前快照显示 `开播人数/范围总人数`。每个内置或自定义分组范围均有独立 `Σ` 操作，Webview 可同时按各范围自己的成员和相同时间戳构造多条合计虚拟序列；成员缺少历史采样时按 `0` 参与合计，明确 `null` 失败采样仍保留断线，避免分组新增主播后抹掉已有合计历史；合计使用独立 ID、稳定颜色和虚线样式，参与统一纵轴、图例和悬浮读数但不写回历史存储。图例按最后有效在线人数排序时只复制并排序图例视图数据，SVG 继续按原曲线数组绘制；运行时回归测试直接执行真实图例函数并约束排序逻辑不得进入 SVG 构造函数。总览范围集合、已选合计范围集合、图例隐藏集合和两个聚合图各自的高度分别保存在 Webview 状态中且互不清空；删除自定义分组时仅裁剪对应失效范围及合计。走势图 SVG 内部同时绘制轴线、横纵轴自适应刻度、对应网格线、纵轴范围端点和横轴起止时间；横轴从预设整分钟/整小时步长中按绘图区宽度选取，纵轴按绘图区高度使用 `1/2/5 × 10^n` 步长，刻度间距不足时自动裁剪内部标签。`ResizeObserver` 按当前容器像素宽度重建 SVG，图表高度变化时按新的真实高度重新构造 SVG，避免线宽、坐标文字或数字形变；CSS 最小宽度保证窄侧栏下的可读性；直播中且存在开播时间时，Webview 基于 `liveStartTime` 本地每秒更新直播时长显示。
+9. Webview 通过 `postMessage` 接收快照并渲染监控面板；展示模式、主播状态筛选、单主播小图开关和小图时间范围位于不受折叠影响的主列表控制区，折叠控制面板按“排序”“分组”“刷新”分组。主播总览和历史走势各自使用常驻标题栏与展开/收起按钮，标题栏不随内容折叠，只有对应内容区切换隐藏状态；分组管理行使用左右两区布局，名称和房间数相邻位于左侧，拖拽手柄、移动、编辑和删除操作集中在右侧。详细/简略主播行的“弹”按钮发送 `openDanmaku` 消息，扩展宿主把房间号交给 `DanmakuWebviewProvider.connectRoom()` 并执行 `bwatch.danmaku.focus`，从而切换到弹幕 View 并复用现有单房间会话自动连接。拖放完成后 Webview 通过 `moveGroupToIndex` 只发送目标分组标识和最终索引，扩展宿主依据当前配置校验并重排 `bwatch.groups`；上下按钮继续通过 `moveGroup` 交换相邻分组。`renameGroup` 请求扩展宿主打开预填当前名称的 VSCode 原生输入框，宿主只更新目标分组的 `name` 并保留稳定 `id`、成员和顺序，配置监听随后同步主列表及总览/历史筛选。主列表按固定 `全部` 分组和自定义分组折叠/展开展示，Webview 按每组当前实际展示房间即时求和在线人数与舰队总人数，并通过与详细/简略主播行对应的 CSS Grid 列显示在分组表头，缺失指标按 `0` 贡献且不写回快照；分组折叠和房间分组编辑器展开状态保存在 Webview 状态中。开启单主播走势时用 SVG 按统一时间窗口绘制每个主播的在线人数迷你走势图；开启总览走势时，Webview 以范围集合维护 `全部`、`开播`、`有数据` 和自定义分组的多选状态，按房间号求各范围成员并集，再按监控列表顺序去重绘制。范围按钮和合计虚拟序列复用同一成员状态格式化逻辑，根据各自实际成员与当前快照显示 `开播人数/范围总人数`。每个内置或自定义分组范围均有独立 `Σ` 操作，Webview 可同时按各范围自己的成员和相同时间戳构造多条合计虚拟序列；成员缺少历史采样时按 `0` 参与合计，明确 `null` 失败采样仍保留断线，避免分组新增主播后抹掉已有合计历史；合计使用独立 ID、稳定颜色和虚线样式，参与统一纵轴、图例和悬浮读数但不写回历史存储。图例按最后有效在线人数排序时只复制并排序图例视图数据，SVG 继续按原曲线数组绘制；运行时回归测试直接执行真实图例函数并约束排序逻辑不得进入 SVG 构造函数。总览范围集合、已选合计范围集合、图例隐藏集合和两个聚合图各自的高度分别保存在 Webview 状态中且互不清空；删除自定义分组时仅裁剪对应失效范围及合计。走势图 SVG 内部同时绘制轴线、横纵轴自适应刻度、对应网格线、纵轴范围端点和横轴起止时间；横轴从预设整分钟/整小时步长中按绘图区宽度选取，纵轴按绘图区高度使用 `1/2/5 × 10^n` 步长，刻度间距不足时自动裁剪内部标签。`ResizeObserver` 按当前容器像素宽度重建 SVG，图表高度变化时按新的真实高度重新构造 SVG，避免线宽、坐标文字或数字形变；CSS 最小宽度保证窄侧栏下的可读性；直播中且存在开播时间时，Webview 基于 `liveStartTime` 本地每秒更新直播时长显示。
 10. Webview 历史面板通过 `loadHistoryDates` 消息请求有本地采样的日期列表，通过 `loadHistoryDate` 消息请求某个本地自然日内指定起止分钟的历史曲线数据；历史面板展开时根据已完成快照的刷新时间按本地时区检测自然日边界，仅在跨日后的首个采样完成时重新请求日期列表，避免随轮询周期重复扫描历史文件，并保留仍有效的当前日期和时间范围选择。扩展宿主从 `OnlineHistoryStore` 读取本地文件并返回 `historyDates` 或 `historyDate`，主播名按当前快照、本地历史元数据、房间号顺序兜底，不触发 B站接口请求，也不写入 `MonitorSnapshot`；历史结果进入渲染层前会过滤无效房间和采样、按时间戳去重排序，并对异常起止时间做兜底，避免单个损坏缓存导致整块历史面板渲染失败。历史图以独立范围集合多选全部、所选时间段内存在大于 0 在线人数采样的有数据直播间和每个自定义分组，并按房间号生成成员并集。历史图使用独立的已选合计范围集合，可同时构造多个范围的合计虚拟序列；历史范围集合、合计集合和图例隐藏集合分别持久化且相互独立。总览与历史面板共用单列响应式控制骨架和 `buildOverviewChart()`；面板、图表与图例限制为可用宽度，`ResizeObserver` 根据图表容器实际像素宽度重建 SVG，避免历史图例的最小内容宽度撑大横轴。
 11. Webview 中的删除、刷新、打开、分组重命名、分组删除、房间分组归属设置、打开添加直播间输入和打开新建分组输入通过消息回传扩展宿主执行；Webview 本身不渲染输入弹窗，分组重命名和新建分组均使用 VSCode 原生输入框。
 12. 用户点击侧边栏添加图标后，扩展宿主打开 VSCode 原生输入框；纯房间号输入先通过 `fetchRooms()` 获取标准化房间状态，主播名输入通过 `searchLiveAnchors()` 获取模糊搜索结果，两条路径再通过 `src/roomSearch.ts` 映射为统一的 `RoomSearchResult` 展示结构，并按当前 `bwatch.rooms` 补充 `monitored` 状态；已监控候选显示 `已监控` 并不会重复写入配置，房间号查询返回未知或错误状态时不生成可添加候选。用户点击新建分组图标后，扩展宿主打开 VSCode 原生输入框创建分组。
 13. 用户运行 `BWatch: Diagnose Network` 时，扩展宿主用当前网络适配器依次请求基础信息、在线人数、舰队、粉丝和搜索诊断接口，并把诊断结果写入 `BWatch` 输出面板；诊断不修改监控列表、历史数据或 Webview 状态。
+
+## 实时弹幕数据流
+
+1. `extension.ts` 创建 `BilibiliDanmakuSession`、`DanmakuWebviewProvider` 和 `DanmakuStatusBar`；直播监控快照变化时把当前监控房间的主播名、标题、开播状态、在线人数、舰队总人数、粉丝数、开播时间及缓存状态同步给弹幕 View。Provider 将 `status === 'live'` 的候选稳定排列在前并保留开播状态供原生下拉框显示绿/红状态点；Webview 为当前房间渲染紧凑指标栏并按 `liveStartTime` 每秒更新时长。该链路只复用现有 `MonitorSnapshot`，不新增轮询、B站请求或弹幕会话网络状态耦合；非监控房间只显示无监控数据的降级状态。
+2. 用户选择或输入房间号并发送 `connect` 消息；会话层关闭旧连接、清空旧弹幕并解析真实房间号。
+3. 会话层从 `x/web-interface/nav` 获取 WBI 图片密钥并生成约 12 小时有效的本地缓存；使用 `id`、`type`、`wts` 和 `w_rid` 请求 `getDanmuInfo`，遇到 `-352` 时刷新密钥重试一次。
+4. 会话层把当前代理候选与 `host_list` 展开为有序线路，优先在同一代理下轮换 B站服务器。每次重连只等待一条线路并在握手前推进游标，失败后短退避再尝试下一条，避免串行握手超时累加；HTTP/HTTPS 代理由 `https-proxy-agent` 提供 CONNECT Agent。会话级 `AbortController` 取消切房或断开前仍在执行的 HTTP 初始化和 WebSocket 握手，尝试世代号与当前 socket 身份检查阻止旧回调污染新连接。
+5. 连接打开后发送匿名认证包；认证成功后每 30 秒发送心跳，心跳响应的人气值进入弹幕状态快照。
+6. 业务消息按 16 字节大端包头拆分，版本 `2` 使用 zlib、版本 `3` 使用 Brotli 递归解压；解包返回有效包和局部错误，单个损坏压缩包只跳过自身，损坏包长会扫描后续合法包头恢复同步。解包后的业务命令分别进入独立 `try/catch`，单个损坏 JSON 只跳过自身。标准化后的文本弹幕同时保存 B站原始发送时间和扩展宿主收包时间；文本弹幕和 SC 以不同增量消息推送 Webview，SC 删除事件携带待移除的 B站消息 ID。
+7. 扩展宿主和 Webview 各自只保留最近 500 条普通弹幕与 100 条 SC；只有首次加载发送完整消息快照，后续连接/心跳快照省略消息数组。普通弹幕事件通过宿主微任务合并为 `messageBatch`，Webview 以单个 `DocumentFragment` 提交同批 DOM，避免跨进程消息积压和逐条布局/滚动。SC 队列按 B站消息 ID 去重并响应删除事件；Webview 通过独立标签页展示普通弹幕与 SC，标签选择写入 Webview 状态。`DanmakuStatusBar` 仍直接订阅会话事件并即时读取最新普通弹幕，不受 Webview 批量更新影响，也不增加网络请求，SC 不覆盖该状态栏。`bwatch.toggleDanmakuStatusBar` 命令切换状态栏项的独立 `enabled` 状态，并把结果写入扩展 `globalState` 的 `bwatch.danmakuStatusBar.enabled`。禁用时渲染入口始终调用 `hide()`，但会话订阅、连接和消息队列保持不变；启用时按最新快照重新渲染。Webview 使用 `getState` / `setState` 保存显示控制面板、自动滚动和各显示选项。一般元数据选项只重绘 Webview 内存消息；`showEmoji` 通过 `setShowEmoji` 消息同步扩展宿主，使普通弹幕、SC 和底部状态栏在关闭 Emoji 时使用相同的序列识别及文本化规则：优先替换为中文名称，名称未知时使用 Unicode 码位标记。转换只作用于展示层，不修改协议数据、连接或宿主快照，重新开启后继续显示内存中的原始 Emoji。
+8. 连接认证后每 10 秒发送 WebSocket Ping，但 Pong 只用于 RTT 和辅助诊断，不作为单周期强制断线条件。会话以认证时间、最后业务帧和最后 Pong 的最大值计算绝对静默时长；连续 45 秒没有任何入站活动才 `terminate()` 当前连接，避免不返回 Pong 的 B站节点、透明代理或 TUN 链路在下一次 30 秒应用心跳前被误断。业务健康独立依据 `sentAt` 与 `receivedAt` 判断：连续两条延迟超过 8 秒，或同帧发送时间跨度超过 5 秒时，即使 Pong/心跳正常也终止退化线路。每个 10 秒诊断窗口还检查选择性弹幕饥饿：只有当前连接已收到过普通弹幕、连续 3 个窗口存在消息包且普通弹幕为 0、累计其他业务命令不少于 12 条并距最后弹幕不少于 30 秒时才终止当前线路；收到新弹幕、候选条件中断或建立新连接会清零窗口证据，选择性饥饿轮换使用 60 秒冷却。下一次连接从有序线路集合的下一组合开始；认证成功不清零连续失败计数，稳定 60 秒或连续 5 条低延迟弹幕后才清零。认证失败立即要求重新获取配置/token，其他失败在至少 3 次且完成一轮当前线路后刷新；HTTP 初始化的临时错误也按同一策略重试，明确无效的房间号停止重试。传输探针漂移超过 5 秒时视为 Extension Host 阻塞，本轮不判断网络超时，并在随后 20 秒抑制消息延迟与选择性饥饿误判；每个探针窗口聚合帧、字节、解包、业务命令、解析结果、错误、命令类型、延迟范围以及饥饿窗口证据。扩展宿主给普通弹幕批次附加递增批次号和发出时间，Webview 聚合交付延迟、DOM 提交耗时、定时器漂移与列表数量后回传输出面板，投递 Promise 返回 `false` 或异常时立即记录。诊断不包含正文、发送者或 UID。主动断开或扩展停用会取消 HTTP 初始化、WebSocket 握手、应用心跳、传输探针、健康、认证和重连定时器。
+
+## 历史跨日查询数据流
+
+- Webview 通过 `loadHistoryDate` 消息发送 `dates: string[]`、`startMinute` 和 `endMinute`；`dates` 长度为 1 或 2，长度为 2 时必须是相邻本地自然日。
+- `extension.ts` 将请求交给 `OnlineHistoryStore.queryDateRangeHistory()`，由扩展宿主按第一天 00:00 加上相对分钟计算一次连续时间窗口，并从长期本地历史文件中筛选所有房间数据。
+- `HistoryQueryResult` 保留首日 `date` 兼容字段，同时返回 `dates`、`startMs`、`endMs` 和双日时的第二天 00:00 `boundaryMs`；Webview 使用同一时间轴绘制，不在前端拼接两个独立图表。
+- 单日横轴和范围标签带日期；双日横轴与悬浮提示使用 `MM/DD HH:mm`，在 `boundaryMs` 处显示第二天 00:00 的虚线分界。
+- 总览和历史图共用稳定颜色分配器：房间按监控列表索引取色，合计序列从房间数量之后取色；预设调色板耗尽后使用确定性 HSL 颜色，不循环复用已有颜色。
 
 ## 刷新数据获取策略
 
@@ -58,7 +83,7 @@
 
 ## 权限、配置、环境变量和第三方服务边界
 
-- 权限/鉴权：扩展不要求 B站登录，也不处理用户账号或密钥。
+- 权限/鉴权：扩展不要求 B站登录，也不处理用户账号或密钥；实时弹幕使用匿名网页端 token 和 WBI 签名，不读取用户 Cookie。
 - 配置项：
   - `bwatch.rooms: string[]`
   - `bwatch.groups: { id: string; name: string; rooms: string[] }[]`
@@ -72,9 +97,10 @@
 - `bwatch.network.proxy.mode: 'auto' | 'manual' | 'off'`
 - `bwatch.network.proxy.url: string`
 - 环境变量：当 `bwatch.network.proxy.mode` 为 `auto` 且 VSCode `http.proxy` 为空时，扩展读取 `HTTPS_PROXY`/`https_proxy`/`HTTP_PROXY`/`http_proxy` 作为 HTTP/HTTPS 代理地址；当该链路仍失败时继续尝试常见本地 HTTP 代理端口。
-- 第三方服务：B站直播房间信息接口和主播搜索接口；失败时需要在 UI 中显示未知/错误状态。主播搜索接口返回 HTTP 412 或错误码 `-412` 时视为可恢复的搜索拦截，UI 提示稍后重试或直接输入直播间房间号。
+- 第三方服务：B站直播房间信息、主播搜索、WBI 导航、弹幕服务器配置和直播 WebSocket 弹幕服务；失败时需要在对应 UI 中显示未知/错误状态。主播搜索接口返回 HTTP 412 或错误码 `-412` 时视为可恢复的搜索拦截；弹幕配置接口返回 `-352` 时刷新 WBI 密钥后重试一次。
 - 在线人数口径：直播中在线观众人数只使用在线榜接口 `onlineNum`；该接口失败时 `online = null`，基础信息接口 `online` 只作为内部人气字段。
 - 网络诊断：`BWatch: Diagnose Network` 只写 VSCode `BWatch` Output Channel，不写本地日志文件；诊断输出会展示代理模式、代理来源、代理地址以及 auto 模式下的本地代理候选；常规错误状态仍展示在侧边栏中，开发验证通过测试输出体现。
+- VSIX 运行时依赖：打包清单必须包含 `ws`、`https-proxy-agent` 及其生产传递依赖；`.vscodeignore` 不得使用 `node_modules/**` 排除全部运行时依赖。
 
 ## 刷新配置数据流
 
@@ -85,9 +111,24 @@
 - Webview 选择型按钮通过 `active` 类和 `aria-pressed` 表示统一的开关状态；CSS 以透明边框/实心按钮色区分未选中与选中，不使用悬浮色模拟持久状态。
 - 图表组件为 SVG 和占位提示预留稳定高度：单主播走势使用固定小图高度；总览/历史分别使用各自的 Webview 状态高度，加载、空数据、错误和成功状态只替换图表内容并沿用当前高度。
 
+## 单主播场次分析数据流
+
+- OnlineHistoryStore.getRoomSessions(roomId) 直接扫描该房间的全部本地长期采样，不读取或修改监控列表状态，因此房间删除后重新添加仍可恢复历史场次。
+- 正数采样创建或延续场次，0 结束场次，null 不切断场次但计入 sampleCount；场次摘要包含起止时间、时长、峰值、总采样点和有效采样点。
+- Webview 通过 loadRoomSessions(requestId, roomId) 请求场次，宿主调用历史存储后回传 roomSessions。读取失败仅更新分析面板状态，不影响实时列表和聚合走势。
+- 点击场次后，Webview 计算前后各 5 分钟的本地时间范围；跨午夜使用现有双日历史查询，最多限制为两个自然日，并保留历史图既有手动筛选、图例和合计状态。
+
 ## AI 修改代码时需要注意的架构约束
 
 - 非平凡变更前必须读取 `docs/prd/README.md`、`docs/prd/product-overview.md`、`docs/prd/modules/README.md`、`docs/prd/architecture.md`、`.agent/skills/prd-keeper/references/project-map.md`、`.agent/skills/prd-keeper/references/gotchas.md` 和最近相关日志。
 - 新增页面、命令、配置项、接口字段、状态流转或第三方服务边界时，必须同步更新本文件和相关模块文档。
 - B站接口适配逻辑应与 VSCode API 解耦，确保核心逻辑可以通过 Node 单元测试覆盖。
+- 弹幕二进制协议、WBI 签名和消息标准化必须与 VSCode API 解耦；协议解析不得让单个未知、损坏业务消息或损坏压缩子包终止长连接，也不得丢弃同一帧其他可恢复命令。业务延迟判断必须与 Ping/Pong 传输健康分离，并排除 Extension Host 明显事件循环漂移造成的误判。
 - 自动刷新间隔不得低于 15 秒；配置和 UI 两侧都需要体现该约束。
+
+### 单主播场次筛选
+
+历史走势的主播场次分析不再使用独立 Webview 子面板。Webview 在历史走势控制区生成两个级联原生 select 控件：主播选择框使用当前监控快照，场次选择框通过既有 loadRoomSessions 消息读取 OnlineHistoryStore.getRoomSessions(roomId) 的本地长期数据。选择主播时清空旧场次并重新加载；选择场次时复用现有历史查询消息，自动定位到场次前后各 5 分钟，跨午夜最多查询两个相邻自然日。分析房间和场次键继续使用 Webview getState/setState 持久化，清除筛选只恢复普通历史范围，不删除本地历史。
+### 图例批量显示控制
+
+总览走势图和历史走势图分别将图例隐藏状态传入同一套渲染器，并在图例顶部提供隐藏全部、全部显示操作；批量操作只修改对应图表的隐藏集合，不修改范围筛选、合计曲线配置或本地历史数据。

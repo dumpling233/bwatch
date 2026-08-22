@@ -1,10 +1,10 @@
 .agent/**
 .serena/**
 .vscode/**
+.temp/**
 docs/**
 src/**
 test/**
-node_modules/**
 out/test/**
 **/*.map
 AGENTS.md

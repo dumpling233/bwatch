@@ -12,7 +12,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:bwatch.liveMonitor"
+    "onView:bwatch.liveMonitor",
+    "onView:bwatch.danmaku"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -30,6 +31,11 @@
         {
           "id": "bwatch.liveMonitor",
           "name": "Bilibili Live Monitor",
+          "type": "webview"
+        },
+        {
+          "id": "bwatch.danmaku",
+          "name": "实时弹幕机",
           "type": "webview"
         }
       ]
@@ -59,6 +65,17 @@
         "command": "bwatch.diagnoseNetwork",
         "title": "BWatch: Diagnose Network",
         "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "bwatch.toggleDanmakuStatusBar",
+        "title": "BWatch: Toggle Latest Danmaku Status Bar"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "bwatch.toggleDanmakuStatusBar",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d"
       }
     ],
     "configuration": {
@@ -161,12 +178,18 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test out/test/**/*.test.js",
+    "probe:danmaku": "npm run compile && node out/test/danmakuLiveProbe.js",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.93.0",
+    "@types/ws": "^8.18.1",
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "https-proxy-agent": "^5.0.1",
+    "ws": "^8.21.3"
   }
 }

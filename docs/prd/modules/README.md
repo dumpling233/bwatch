@@ -4,7 +4,8 @@
 
 ## 当前模块列表
 
-- [直播监控扩展](live-monitor.md)：VSCode 侧边栏、直播间配置、B站接口拉取、自动刷新、开播提醒和外部打开。
+- [直播监控扩展](live-monitor.md)：VSCode 侧边栏、直播间配置、B站接口拉取、自动刷新、开播提醒、在线人数历史走势、单主播场次分析和外部打开。
+- [实时弹幕机](danmaku-viewer.md)：独立的 B站直播间实时弹幕与 Super Chat View，负责匿名 WBI 初始化、WebSocket 长连接、心跳、解压、重连和双列表交互。
 - [PRD Keeper 治理](prd-keeper.md)：`.agent/skills/prd-keeper/`、`AGENTS.md`、`CODEX.md`、`CLAUDE.md` 和 `docs/prd/`，定义 AI 开发与 PRD 维护流程。
 
 ## 待补充模块

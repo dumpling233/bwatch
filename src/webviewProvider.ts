@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { formatUpdatedAt } from './time';
-import { DataRefreshSettings, HistoryDateSummary, HistoryQueryResult, MonitorSnapshot } from './types';
+import { DataRefreshSettings, HistoryDateSummary, HistoryQueryResult, LiveSessionSummary, MonitorSnapshot } from './types';
 
 type WebviewMessage =
   | { type: 'ready' }
@@ -9,6 +9,7 @@ type WebviewMessage =
   | { type: 'openCreateGroupInput' }
   | { type: 'removeRoom'; roomId: string }
   | { type: 'openRoom'; roomId: string }
+  | { type: 'openDanmaku'; roomId: string }
   | { type: 'deleteGroup'; groupId: string }
   | { type: 'renameGroup'; groupId: string }
   | { type: 'moveGroup'; groupId: string; direction: 'up' | 'down' }
@@ -19,7 +20,8 @@ type WebviewMessage =
   | { type: 'setInterval'; intervalSeconds: number }
   | { type: 'setDataRefreshInterval'; kind: keyof DataRefreshSettings; intervalSeconds: number }
   | { type: 'loadHistoryDates'; requestId: number }
-  | { type: 'loadHistoryDate'; requestId: number; date: string; startMinute: number; endMinute: number };
+  | { type: 'loadHistoryDate'; requestId: number; dates: string[]; startMinute: number; endMinute: number }
+  | { type: 'loadRoomSessions'; requestId: number; roomId: string };
 
 export interface WebviewActions {
   refresh(): void;
@@ -27,6 +29,7 @@ export interface WebviewActions {
   showCreateGroupInput(): void;
   removeRoom(roomId: string): void;
   openRoom(roomId: string): void;
+  openDanmaku(roomId: string): void;
   deleteGroup(groupId: string): void;
   showRenameGroupInput(groupId: string): void;
   moveGroup(groupId: string, direction: 'up' | 'down'): void;
@@ -37,7 +40,8 @@ export interface WebviewActions {
   setAutoRefreshInterval(intervalSeconds: number): void;
   setDataRefreshInterval(kind: keyof DataRefreshSettings, intervalSeconds: number): void;
   getHistoryDates(): HistoryDateSummary[];
-  queryHistoryDate(date: string, startMinute: number, endMinute: number): HistoryQueryResult;
+  queryHistoryDate(dates: string[], startMinute: number, endMinute: number): HistoryQueryResult;
+  getRoomSessions(roomId: string): LiveSessionSummary[];
 }
 
 export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
@@ -93,6 +97,9 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
       case 'openRoom':
         this.actions.openRoom(message.roomId);
         break;
+      case 'openDanmaku':
+        this.actions.openDanmaku(message.roomId);
+        break;
       case 'deleteGroup':
         this.actions.deleteGroup(message.groupId);
         break;
@@ -124,7 +131,10 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
         this.handleHistoryDates(message.requestId);
         break;
       case 'loadHistoryDate':
-        this.handleHistoryDate(message.requestId, message.date, message.startMinute, message.endMinute);
+        this.handleHistoryDate(message.requestId, message.dates, message.startMinute, message.endMinute);
+        break;
+      case 'loadRoomSessions':
+        this.handleRoomSessions(message.requestId, message.roomId);
         break;
     }
   }
@@ -147,12 +157,12 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private handleHistoryDate(requestId: number, date: string, startMinute: number, endMinute: number): void {
+  private handleHistoryDate(requestId: number, dates: string[], startMinute: number, endMinute: number): void {
     try {
       void this.view?.webview.postMessage({
         type: 'historyDate',
         requestId,
-        history: this.actions.queryHistoryDate(date, startMinute, endMinute)
+        history: this.actions.queryHistoryDate(dates, startMinute, endMinute)
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '历史数据读取失败';
@@ -160,11 +170,33 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
         type: 'historyDate',
         requestId,
         history: {
-          date,
+          date: dates[0] || '',
+          dates,
           startMs: 0,
           endMs: 0,
           rooms: []
         },
+        error: message
+      });
+    }
+  }
+
+  private handleRoomSessions(requestId: number, roomId: string): void {
+    try {
+      void this.view?.webview.postMessage({
+        type: 'roomSessions',
+        requestId,
+        roomId,
+        anchorName: this.latestSnapshot.rooms.find((room) => room.roomId === roomId)?.anchorName || '',
+        sessions: this.actions.getRoomSessions(roomId)
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '主播历史读取失败';
+      void this.view?.webview.postMessage({
+        type: 'roomSessions',
+        requestId,
+        roomId,
+        sessions: [],
         error: message
       });
     }
@@ -186,12 +218,6 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <main class="app">
-    <section class="toolbar" aria-label="管理工具栏">
-      <div class="toolbar-spacer" aria-hidden="true"></div>
-      <button id="refresh-button" class="icon-button" title="立即刷新" aria-label="立即刷新">↻</button>
-      <button id="open-search-button" class="icon-button" title="搜索添加直播间" aria-label="搜索添加直播间">＋</button>
-    </section>
-
     <section id="room-list-panel" class="subpanel room-list-panel" aria-label="直播间列表">
       <div class="subpanel-titlebar room-list-panel-header">
         <button id="room-list-toggle" class="subpanel-toggle aggregate-panel-toggle icon-button" type="button" aria-expanded="true" title="收起直播间列表" aria-label="收起直播间列表" aria-controls="room-list-content">
@@ -301,6 +327,10 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
           <span class="disclosure-icon" aria-hidden="true"></span>
         </button>
         <span class="subpanel-title aggregate-panel-title">主播总览</span>
+        <div class="subpanel-actions aggregate-panel-actions">
+          <button id="refresh-button" class="icon-button" title="立即刷新" aria-label="立即刷新">↻</button>
+          <button id="open-search-button" class="icon-button" title="搜索添加直播间" aria-label="搜索添加直播间">＋</button>
+        </div>
       </div>
       <div id="overview-trend-content" class="subpanel-content aggregate-panel-content hidden"></div>
     </section>

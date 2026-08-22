@@ -95,8 +95,10 @@ export interface HistoryRoomSeries {
 
 export interface HistoryQueryResult {
   date: string;
+  dates?: string[];
   startMs: number;
   endMs: number;
+  boundaryMs?: number;
   rooms: HistoryRoomSeries[];
 }
 
@@ -107,4 +109,13 @@ export interface MonitorSnapshot {
   lastRefreshAt: number | null;
   onlineHistory: OnlineViewerHistory;
   message?: string;
+}
+export interface LiveSessionSummary {
+  roomId: string;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  peakOnline: number;
+  sampleCount: number;
+  validSampleCount: number;
 }

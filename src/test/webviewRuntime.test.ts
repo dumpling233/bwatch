@@ -42,6 +42,24 @@ function extractFunction(source: string, name: string, nextName: string): string
   return source.slice(start, end);
 }
 
+test('history trend exposes a cascading room and session filter', () => {
+  const source = readWebviewSource();
+  const provider = readWebviewProviderSource();
+  assert.doesNotMatch(provider, /id="room-history-analysis"/);
+  assert.doesNotMatch(source, /function openRoomHistoryAnalysis/);
+  assert.match(source, /type: 'loadRoomSessions'/);
+  assert.match(source, /function buildHistorySessionFilter/);
+  assert.match(source, /className = 'history-session-select'/);
+  assert.match(source, /function setHistorySessionRoom/);
+  assert.match(source, /function applyHistorySessionVisibility/);
+  assert.match(source, /historySessionHiddenRoomIdsBackup/);
+  assert.doesNotMatch(extractFunction(source, 'buildHistoryTrend', 'buildHistoryCalendar'), /candidateRooms\.splice/);
+  assert.doesNotMatch(extractFunction(source, 'buildHistoryTrend', 'buildHistoryCalendar'), /aggregateSeries\.splice/);
+  assert.match(extractFunction(source, 'selectRoomSession', 'formatSessionDateTime'), /applyHistorySessionVisibility/);
+  assert.equal(source.includes('const paddingMs = 5 * 60 * 1000'), true);
+  assert.equal(source.includes('maxEndMs = startOfDay.getTime() + 2 * 24 * 60 * 60 * 1000'), true);
+});
+
 test('overview legend sorts latest online values without breaking chart rendering', () => {
   const source = readWebviewSource();
   const buildOverviewSvgSource = extractFunction(source, 'buildOverviewSvg', 'overviewLegend');
@@ -66,8 +84,22 @@ test('overview legend sorts latest online values without breaking chart renderin
     { room: { roomId: 'high', anchorName: '高' }, color: 'red', points: [[1, 300], [2, 500]] }
   ];
   const legend = vm.runInContext('overviewLegend', context)(series, new Set<string>(), () => undefined) as FakeElement;
-  const values = legend.children.map((entry) => entry.children[2].textContent);
+  const legendList = legend.children.find((entry) => entry.className === 'overview-legend-list') as FakeElement;
+  const values = legendList.children.map((entry) => entry.children[2].textContent);
   assert.deepEqual(values, ['500', '200', '--']);
+});
+
+test('legend exposes bulk hide and show controls for overview and history charts', () => {
+  const source = readWebviewSource();
+  const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
+  const legendSource = extractFunction(source, 'overviewLegend', 'toggleOverviewSeries');
+  assert.match(legendSource, /overview-legend-actions/);
+  assert.match(legendSource, /隐藏全部/);
+  assert.match(legendSource, /全部显示/);
+  assert.match(extractFunction(source, 'setAllOverviewSeriesVisibility', 'toggleOverviewSeries'), /overviewHiddenRoomIds\.clear/);
+  assert.match(extractFunction(source, 'setAllHistorySeriesVisibility', 'toggleHistorySeries'), /historyHiddenRoomIds\.clear/);
+  assert.match(css, /\.overview-legend-actions/);
+  assert.match(css, /\.overview-legend-action/);
 });
 
 test('trend range selection merges multiple scopes without duplicate rooms', () => {
@@ -238,9 +270,10 @@ test('history query results are normalized before rendering', () => {
 
   const normalize = vm.runInContext('normalizeHistoryQueryResult', context) as (
     value: unknown,
-    fallbackDate: string
+    fallbackDates: string[]
   ) => {
     date: string;
+    dates: string[];
     startMs: number;
     endMs: number;
     rooms: Array<{ roomId: string; anchorName: string; points: Array<[number, number | null]> }>;
@@ -258,10 +291,11 @@ test('history query results are normalized before rendering', () => {
       },
       { roomId: '', points: [[500, 50]] }
     ]
-  }, 'fallback');
+  }, ['fallback']);
 
   assert.deepEqual(JSON.parse(JSON.stringify(result)), {
     date: '2026-08-16',
+    dates: ['fallback'],
     startMs: 100,
     endMs: 100,
     rooms: [{
@@ -270,6 +304,35 @@ test('history query results are normalized before rendering', () => {
       points: [[100, null], [200, null], [300, 30]]
     }]
   });
+});
+
+test('history trend supports a two-day range and marks the second midnight', () => {
+  const source = readWebviewSource();
+
+  assert.match(source, /HISTORY_TWO_DAY_END_MINUTE = 2 \* 24 \* 60 - 1/);
+  assert.match(extractFunction(source, 'requestHistoryDate', 'handleHistoryDates'), /dates: historySelectedDates/);
+  assert.match(extractFunction(source, 'appendTrendAxis', 'getAggregateChartScale'), /day-boundary/);
+  assert.match(extractFunction(source, 'appendTrendAxis', 'getAggregateChartScale'), /formatShortTime\(trendWindow\.boundaryMs, true\)/);
+  assert.match(extractFunction(source, 'formatShortTime', 'formatHistoryDateLabel'), /includeDate/);
+});
+
+test('trend series use a large unique palette with deterministic fallback colors', () => {
+  const source = readWebviewSource();
+  const paletteMatch = /const TREND_COLORS = \[([\s\S]*?)\];/.exec(source);
+  assert.ok(paletteMatch);
+  const palette = Array.from(paletteMatch[1].matchAll(/'#[0-9A-F]{6}'/g), (match) => match[0]);
+  assert.ok(new Set(palette).size >= 20);
+
+  const context = vm.createContext({ Math });
+  vm.runInContext(`const TREND_COLORS = ${JSON.stringify(palette)};`, context);
+  vm.runInContext(extractFunction(source, 'getTrendColor', 'toggleScope'), context);
+  const getTrendColor = vm.runInContext('getTrendColor', context) as (index: number) => string;
+  const colors = Array.from({ length: 40 }, (_, index) => getTrendColor(index));
+
+  assert.equal(new Set(colors).size, colors.length);
+  assert.match(extractFunction(source, 'buildOverviewTrend', 'renderHistoryTrend'), /getTrendColor/);
+  assert.match(extractFunction(source, 'buildHistoryTrend', 'buildHistoryCalendar'), /getTrendColor/);
+  assert.match(extractFunction(source, 'getAggregateSeriesColor', 'toggleScope'), /colorOffset/);
 });
 
 test('trend scale handles large historical datasets without spreading arguments', () => {
@@ -393,10 +456,6 @@ test('room list operations share one subpanel and advanced controls stay inside 
   const panelStart = providerSource.indexOf('<section id="room-list-panel"');
   const panelEnd = providerSource.indexOf('<section id="overview-trend"', panelStart);
   const panelSource = providerSource.slice(panelStart, panelEnd);
-  const toolbarStart = providerSource.indexOf('<section class="toolbar"');
-  const toolbarEnd = providerSource.indexOf('</section>', toolbarStart);
-  const toolbarSource = providerSource.slice(toolbarStart, toolbarEnd);
-
   assert.notEqual(panelStart, -1);
   assert.notEqual(panelEnd, -1);
   assert.ok(panelSource.indexOf('class="list-controls"') < panelSource.indexOf('id="control-panel"'));
@@ -409,9 +468,9 @@ test('room list operations share one subpanel and advanced controls stay inside 
   assert.match(panelSource, /id="online-interval-input"/);
   assert.match(panelSource, /id="fans-interval-input"/);
   assert.match(panelSource, /id="guard-interval-input"/);
-  assert.doesNotMatch(toolbarSource, /control-panel-toggle/);
-  assert.doesNotMatch(toolbarSource, /create-group-button/);
-  assert.match(css, /\.toolbar\s*\{[\s\S]*repeat\(2, 28px\)/);
+  assert.match(providerSource, /id="overview-trend"[\s\S]*class="subpanel-actions aggregate-panel-actions"[\s\S]*id="refresh-button"[\s\S]*id="open-search-button"/);
+  assert.doesNotMatch(providerSource, /<section class="toolbar"/);
+  assert.match(css, /\.aggregate-panel-actions\s*\{[\s\S]*grid-template-columns:\s*repeat\(2, 28px\)/);
   assert.match(css, /\.room-list-panel\s*\{[\s\S]*border:/);
   assert.match(css, /\.room-list-panel\s*\{[\s\S]*order:\s*3/);
   assert.match(css, /\.overview-trend\s*\{[\s\S]*order:\s*1/);
@@ -470,4 +529,19 @@ test('all three subpanels share a titlebar and the room list has an independent 
   assert.match(css, /\.subpanel-titlebar\s*\{[\s\S]*grid-template-columns:\s*28px minmax\(0, 1fr\) max-content/);
   assert.match(css, /\.subpanel-toggle,[\s\S]*width:\s*28px[\s\S]*height:\s*28px/);
   assert.match(css, /\.subpanel\.collapsed \.subpanel-titlebar\s*\{[\s\S]*border-bottom-color:\s*transparent/);
+});
+
+test('room rows open and automatically connect the selected room in the danmaku view', () => {
+  const providerSource = readWebviewProviderSource();
+  const webviewSource = readWebviewSource();
+  const extensionSource = fs.readFileSync(path.resolve(__dirname, '../../src/extension.ts'), 'utf8');
+  const roomCardSource = extractFunction(webviewSource, 'roomCard', 'compactRoomRow');
+  const compactRowSource = extractFunction(webviewSource, 'compactRoomRow', 'trendPanel');
+
+  assert.match(providerSource, /\| \{ type: 'openDanmaku'; roomId: string \}/);
+  assert.match(providerSource, /case 'openDanmaku':[\s\S]*this\.actions\.openDanmaku\(message\.roomId\)/);
+  assert.match(roomCardSource, /actionButton\('弹', '打开实时弹幕机',[\s\S]*type: 'openDanmaku'/);
+  assert.match(compactRowSource, /actionButton\('弹', '打开实时弹幕机',[\s\S]*type: 'openDanmaku'/);
+  assert.match(extensionSource, /provider\.connectRoom\(normalizedRoomId\)/);
+  assert.match(extensionSource, /executeCommand\('bwatch\.danmaku\.focus'\)/);
 });

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import {
   HistoryDateSummary,
   HistoryQueryResult,
+  LiveSessionSummary,
   LiveRoomStatus,
   OnlineViewerHistory,
   OnlineViewerHistoryPoint
@@ -64,6 +65,57 @@ export class OnlineHistoryStore {
     );
   }
 
+  getRoomSessions(roomId: string): LiveSessionSummary[] {
+    if (!isRoomId(roomId)) {
+      return [];
+    }
+
+    const sessions: LiveSessionSummary[] = [];
+    let current: {
+      startMs: number;
+      endMs: number;
+      peakOnline: number;
+      sampleCount: number;
+      validSampleCount: number;
+    } | undefined;
+
+    for (const [timestampMs, online] of this.history[roomId] ?? []) {
+      if (typeof online === 'number' && online > 0) {
+        if (!current) {
+          current = {
+            startMs: timestampMs,
+            endMs: timestampMs,
+            peakOnline: online,
+            sampleCount: 1,
+            validSampleCount: 1
+          };
+        } else {
+          current.endMs = timestampMs;
+          current.peakOnline = Math.max(current.peakOnline, online);
+          current.sampleCount += 1;
+          current.validSampleCount += 1;
+        }
+        continue;
+      }
+
+      if (online === null && current) {
+        current.sampleCount += 1;
+        continue;
+      }
+
+      if (online === 0 && current) {
+        sessions.push(createLiveSessionSummary(roomId, current));
+        current = undefined;
+      }
+    }
+
+    if (current) {
+      sessions.push(createLiveSessionSummary(roomId, current));
+    }
+
+    return sessions.sort((left, right) => right.endMs - left.endMs);
+  }
+
   getAvailableDates(): HistoryDateSummary[] {
     const dates = new Map<string, { roomIds: Set<string>; pointCount: number }>();
 
@@ -92,18 +144,30 @@ export class OnlineHistoryStore {
     endMinute = 23 * 60 + 59,
     roomNames: Readonly<Record<string, string>> = {}
   ): HistoryQueryResult {
-    if (!isLocalDateString(date)) {
+    return this.queryDateRangeHistory([date], startMinute, endMinute, roomNames);
+  }
+
+  queryDateRangeHistory(
+    dates: readonly string[],
+    startMinute = 0,
+    endMinute = 23 * 60 + 59,
+    roomNames: Readonly<Record<string, string>> = {}
+  ): HistoryQueryResult {
+    const normalizedDates = normalizeDateRange(dates);
+    if (normalizedDates.length === 0) {
       return {
-        date,
+        date: dates[0] || '',
+        dates: [],
         startMs: 0,
         endMs: 0,
         rooms: []
       };
     }
 
-    const normalizedStartMinute = clampDayMinute(startMinute);
-    const normalizedEndMinute = clampDayMinute(endMinute);
-    const startOfDayMs = getLocalDateStartMs(date);
+    const maxMinute = normalizedDates.length === 2 ? 2 * 24 * 60 - 1 : 23 * 60 + 59;
+    const normalizedStartMinute = clampRangeMinute(startMinute, maxMinute);
+    const normalizedEndMinute = clampRangeMinute(endMinute, maxMinute);
+    const startOfDayMs = getLocalDateStartMs(normalizedDates[0]);
     const startMs = startOfDayMs + Math.min(normalizedStartMinute, normalizedEndMinute) * 60 * 1000;
     const endMs = startOfDayMs + Math.max(normalizedStartMinute, normalizedEndMinute) * 60 * 1000 + 60 * 1000 - 1;
     const rooms = Object.entries(this.history)
@@ -116,9 +180,11 @@ export class OnlineHistoryStore {
       .sort((left, right) => compareRoomIds(left.roomId, right.roomId));
 
     return {
-      date,
+      date: normalizedDates[0],
+      dates: normalizedDates,
       startMs,
       endMs,
+      boundaryMs: normalizedDates.length === 2 ? getLocalDateStartMs(normalizedDates[1]) : undefined,
       rooms
     };
   }
@@ -257,6 +323,27 @@ export class OnlineHistoryStore {
     );
     fs.renameSync(tempFilePath, filePath);
   }
+}
+
+function createLiveSessionSummary(
+  roomId: string,
+  session: {
+    startMs: number;
+    endMs: number;
+    peakOnline: number;
+    sampleCount: number;
+    validSampleCount: number;
+  }
+): LiveSessionSummary {
+  return {
+    roomId,
+    startMs: session.startMs,
+    endMs: session.endMs,
+    durationMs: Math.max(0, session.endMs - session.startMs),
+    peakOnline: session.peakOnline,
+    sampleCount: session.sampleCount,
+    validSampleCount: session.validSampleCount
+  };
 }
 
 function sanitizeStoredRoomHistory(roomId: string, value: unknown): SanitizedStoredRoomHistory {
@@ -408,6 +495,28 @@ function clampDayMinute(value: number): number {
   }
 
   return Math.min(23 * 60 + 59, Math.max(0, Math.floor(value)));
+}
+
+function clampRangeMinute(value: number, maxMinute: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.min(maxMinute, Math.max(0, Math.floor(value)));
+}
+
+function normalizeDateRange(dates: readonly string[]): string[] {
+  const uniqueDates = Array.from(new Set(dates.filter(isLocalDateString))).sort();
+  if (uniqueDates.length === 1) {
+    return uniqueDates;
+  }
+  if (uniqueDates.length !== 2) {
+    return [];
+  }
+
+  const firstDay = getLocalDateStartMs(uniqueDates[0]);
+  const secondDay = getLocalDateStartMs(uniqueDates[1]);
+  return secondDay - firstDay === 24 * 60 * 60 * 1000 ? uniqueDates : [];
 }
 
 function compareRoomIds(left: string, right: string): number {

@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
 import { BilibiliLiveClient } from './bilibiliClient';
+import { BilibiliDanmakuSession } from './danmakuClient';
+import { DanmakuStatusBar } from './danmakuStatusBar';
+import { DanmakuWebviewProvider } from './danmakuWebviewProvider';
 import {
   clampAutoRefreshInterval,
   clampDataRefreshInterval,
@@ -20,12 +23,21 @@ import { LiveMonitorWebviewProvider } from './webviewProvider';
 import { RoomGroup, RoomSearchResult } from './types';
 
 const CONFIG_SECTION = 'bwatch';
+const DANMAKU_STATUS_BAR_ENABLED_KEY = 'bwatch.danmakuStatusBar.enabled';
 
 export function activate(context: vscode.ExtensionContext): void {
   let networkContext = createNetworkContext();
   const fetchImpl: FetchLike = (input, init) => networkContext.fetch(input, init);
   const client = new BilibiliLiveClient(fetchImpl);
   const output = vscode.window.createOutputChannel('BWatch');
+  const danmakuSession = new BilibiliDanmakuSession(fetchImpl, () => networkContext.proxy, {
+    log: (message) => output.appendLine(message)
+  });
+  const danmakuStatusBar = new DanmakuStatusBar(
+    danmakuSession,
+    vscode.window.createStatusBarItem('bwatch.latestDanmaku', vscode.StatusBarAlignment.Left, 10),
+    context.globalState.get<boolean>(DANMAKU_STATUS_BAR_ENABLED_KEY, true)
+  );
   const historyStore = new OnlineHistoryStore(context.globalState, context.globalStorageUri.fsPath);
   const monitor = new LiveMonitor(client, getSettings(), {
     notifyLiveStart(roomId, anchorName, title) {
@@ -48,6 +60,16 @@ export function activate(context: vscode.ExtensionContext): void {
     return names;
   };
 
+  const danmakuProvider = new DanmakuWebviewProvider(
+    context.extensionUri,
+    danmakuSession,
+    {
+      openRoom: (roomId) => void openRoom(roomId),
+      setShowEmoji: (showEmoji) => danmakuStatusBar.setShowEmoji(showEmoji),
+      logDiagnostic: (message) => output.appendLine(`[${new Date().toISOString()}] [弹幕] ${message}`)
+    },
+    monitor.getSnapshot().rooms
+  );
   const provider = new LiveMonitorWebviewProvider(
     context.extensionUri,
     {
@@ -56,6 +78,7 @@ export function activate(context: vscode.ExtensionContext): void {
       showCreateGroupInput: () => void showCreateGroupInput(),
       removeRoom,
       openRoom: (roomId) => void openRoom(roomId),
+      openDanmaku: (roomId) => void openDanmaku(danmakuProvider, roomId),
       deleteGroup,
       showRenameGroupInput: (groupId) => void showRenameGroupInput(groupId),
       moveGroup,
@@ -66,8 +89,9 @@ export function activate(context: vscode.ExtensionContext): void {
       setAutoRefreshInterval,
       setDataRefreshInterval,
       getHistoryDates: () => historyStore.getAvailableDates(),
-      queryHistoryDate: (date, startMinute, endMinute) =>
-        historyStore.queryDateHistory(date, startMinute, endMinute, getKnownRoomNames())
+      queryHistoryDate: (dates, startMinute, endMinute) =>
+        historyStore.queryDateRangeHistory(dates, startMinute, endMinute, getKnownRoomNames()),
+      getRoomSessions: (roomId) => historyStore.getRoomSessions(roomId)
     },
     monitor.getSnapshot()
   );
@@ -76,11 +100,20 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider('bwatch.liveMonitor', provider, {
       webviewOptions: { retainContextWhenHidden: true }
     }),
+    vscode.window.registerWebviewViewProvider('bwatch.danmaku', danmakuProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    }),
     vscode.commands.registerCommand('bwatch.refresh', () => monitor.refresh()),
     vscode.commands.registerCommand('bwatch.addRoom', () => showAddRoomInput(client)),
     vscode.commands.registerCommand('bwatch.removeRoom', removeRoom),
     vscode.commands.registerCommand('bwatch.openRoom', openRoom),
     vscode.commands.registerCommand('bwatch.diagnoseNetwork', () => diagnoseNetwork(networkContext, output)),
+    vscode.commands.registerCommand('bwatch.toggleDanmakuStatusBar', async () => {
+      const enabled = !danmakuStatusBar.isEnabled();
+      await context.globalState.update(DANMAKU_STATUS_BAR_ENABLED_KEY, enabled);
+      danmakuStatusBar.setEnabled(enabled);
+      vscode.window.setStatusBarMessage(`BWatch：底部弹幕已${enabled ? '开启' : '关闭'}`, 2000);
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       const networkChanged =
         event.affectsConfiguration('http.proxy') || event.affectsConfiguration(`${CONFIG_SECTION}.network.proxy`);
@@ -94,10 +127,16 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     output,
-    { dispose: () => monitor.dispose() }
+    danmakuProvider,
+    danmakuStatusBar,
+    { dispose: () => monitor.dispose() },
+    { dispose: () => danmakuSession.dispose() }
   );
 
-  monitor.onDidChange((snapshot) => provider.update(snapshot));
+  monitor.onDidChange((snapshot) => {
+    provider.update(snapshot);
+    danmakuProvider.updateRooms(snapshot.rooms);
+  });
   void monitor.refresh();
 }
 
@@ -327,6 +366,16 @@ async function openRoom(roomId?: string): Promise<void> {
   }
 
   await vscode.env.openExternal(vscode.Uri.parse(`https://live.bilibili.com/${normalizedRoomId}`));
+}
+
+async function openDanmaku(provider: DanmakuWebviewProvider, roomId?: string): Promise<void> {
+  const normalizedRoomId = String(roomId ?? '').trim();
+  if (!/^\d+$/.test(normalizedRoomId)) {
+    return;
+  }
+
+  provider.connectRoom(normalizedRoomId);
+  await vscode.commands.executeCommand('bwatch.danmaku.focus');
 }
 
 async function setAutoRefreshEnabled(enabled: boolean): Promise<void> {

@@ -36,6 +36,33 @@ test('OnlineHistoryStore appends samples and keeps null points', async (t) => {
   ]);
 });
 
+test('OnlineHistoryStore identifies sessions from positive, zero, and null samples', async (t) => {
+  const storageRootPath = createTempDir(t);
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+  const firstStart = 1000;
+
+  await store.record([room('100', 10)], firstStart);
+  await store.record([room('100', null)], 2000);
+  await store.record([room('100', 30)], 3000);
+  await store.record([room('100', 0)], 4000);
+  await store.record([room('100', 8)], 5000);
+  await store.record([room('100', 0)], 6000);
+
+  assert.deepEqual(store.getRoomSessions('100'), [
+    { roomId: '100', startMs: 5000, endMs: 5000, durationMs: 0, peakOnline: 8, sampleCount: 1, validSampleCount: 1 },
+    { roomId: '100', startMs: firstStart, endMs: 3000, durationMs: 2000, peakOnline: 30, sampleCount: 3, validSampleCount: 2 }
+  ]);
+});
+
+test('OnlineHistoryStore returns no sessions for empty, zero, or null-only history', async (t) => {
+  const storageRootPath = createTempDir(t);
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+  await store.record([room('100', 0)], 1000);
+  await store.record([room('100', null)], 2000);
+  assert.deepEqual(store.getRoomSessions('100'), []);
+  assert.deepEqual(store.getRoomSessions('missing'), []);
+});
+
 test('OnlineHistoryStore persists samples to local room files', async (t) => {
   const storageRootPath = createTempDir(t);
   const firstStore = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
@@ -214,6 +241,32 @@ test('OnlineHistoryStore queries one local date time range', async (t) => {
       points: [[inRange, 10]]
     }
   ]);
+});
+
+test('OnlineHistoryStore queries two adjacent local dates as one continuous range', async (t) => {
+  const storageRootPath = createTempDir(t);
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+  const firstDayPoint = new Date(2026, 7, 13, 23, 58, 0, 0).getTime();
+  const secondDayPoint = new Date(2026, 7, 14, 0, 2, 0, 0).getTime();
+
+  await store.record([room('100', 10, '主播甲')], firstDayPoint);
+  await store.record([room('100', 20, '主播甲')], secondDayPoint);
+
+  const history = store.queryDateRangeHistory(['2026-08-13', '2026-08-14'], 23 * 60, 24 * 60 + 5);
+
+  assert.deepEqual(history.dates, ['2026-08-13', '2026-08-14']);
+  assert.equal(history.startMs, new Date(2026, 7, 13, 23, 0, 0, 0).getTime());
+  assert.equal(history.endMs, new Date(2026, 7, 14, 0, 5, 59, 999).getTime());
+  assert.equal(history.boundaryMs, new Date(2026, 7, 14, 0, 0, 0, 0).getTime());
+  assert.deepEqual(history.rooms[0].points, [[firstDayPoint, 10], [secondDayPoint, 20]]);
+});
+
+test('OnlineHistoryStore rejects ranges longer than two days or with non-adjacent dates', async (t) => {
+  const storageRootPath = createTempDir(t);
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+
+  assert.deepEqual(store.queryDateRangeHistory(['2026-08-13', '2026-08-15']).dates, []);
+  assert.deepEqual(store.queryDateRangeHistory(['2026-08-13', '2026-08-14', '2026-08-15']).dates, []);
 });
 
 function createTempDir(t: TestContext): string {

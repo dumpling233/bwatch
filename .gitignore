@@ -1,5 +1,6 @@
 node_modules/
 out/
 .vscode-test/
+.temp/
 *.vsix
 npm-debug.log*

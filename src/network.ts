@@ -229,15 +229,17 @@ async function fetchThroughAutoLocalProxyCandidates(
     }
   }
 
+  let directCurlError: string | undefined;
   try {
     return await fetchWithCurl(input, init, DEFAULT_REQUEST_TIMEOUT_MS);
-  } catch {
-    // Prefer a combined message so users can see both the original and local proxy failures.
+  } catch (error) {
+    directCurlError = formatNetworkError(error);
   }
 
   if (proxyErrors.length > 0) {
     throw new Error(
-      `${formatNetworkError(originalError)}；已尝试本地代理候选：${proxyErrors.join('；')}`
+      `${formatNetworkError(originalError)}；已尝试本地代理候选：${proxyErrors.join('；')}；` +
+        `直连 curl 兜底失败：${directCurlError ?? 'unknown'}`
     );
   }
 

@@ -54,32 +54,23 @@
   const AGGREGATE_CHART_MAX_HEIGHT = 640;
   const HISTORY_DAY_START_MINUTE = 0;
   const HISTORY_DAY_END_MINUTE = 23 * 60 + 59;
+  const HISTORY_TWO_DAY_END_MINUTE = 2 * 24 * 60 - 1;
   const OVERVIEW_RANGE_MODES = ['all', 'live', 'withData'];
   const HISTORY_RANGE_MODES = ['all', 'withData'];
   const GROUP_SCOPE_PREFIX = 'group:';
   const ALL_GROUP_KEY = 'all';
   const AGGREGATE_SERIES_ID_PREFIX = '__scope_total__:';
-  const AGGREGATE_TREND_COLORS = [
-    'var(--vscode-editor-foreground)',
-    'var(--vscode-charts-purple)',
-    'var(--vscode-charts-orange)',
-    'var(--vscode-charts-blue)',
-    'var(--vscode-charts-green)',
-    'var(--vscode-charts-red)',
-    'var(--vscode-charts-yellow)'
-  ];
-  const OVERVIEW_TREND_COLORS = [
-    'var(--vscode-charts-blue)',
-    'var(--vscode-charts-green)',
-    'var(--vscode-charts-yellow)',
-    'var(--vscode-charts-red)',
-    'var(--vscode-charts-purple)',
-    'var(--vscode-charts-orange)'
+  const TREND_COLORS = [
+    '#3B82F6', '#22C55E', '#EAB308', '#EF4444', '#A855F7', '#F97316',
+    '#06B6D4', '#EC4899', '#84CC16', '#14B8A6', '#8B5CF6', '#F43F5E',
+    '#0EA5E9', '#D946EF', '#E879F9', '#10B981', '#F59E0B', '#6366F1',
+    '#FB7185', '#2DD4BF', '#A3E635', '#38BDF8', '#C084FC', '#FB923C'
   ];
   const persistedState = normalizePersistedState(vscode.getState?.());
 
   let currentHistoryDatesRequestId = 0;
   let currentHistoryDateRequestId = 0;
+  let currentRoomSessionsRequestId = 0;
   let latestSnapshot = undefined;
   let trendsExpanded = persistedState.trendsExpanded;
   let trendWindowMinutes = persistedState.trendWindowMinutes;
@@ -90,13 +81,17 @@
   let overviewAggregateScopes = new Set(persistedState.overviewAggregateScopes);
   let overviewHiddenRoomIds = new Set(persistedState.overviewHiddenRoomIds);
   let historyTrendExpanded = persistedState.historyTrendExpanded;
-  let historySelectedDate = persistedState.historySelectedDate;
+  let historySelectedDates = persistedState.historySelectedDates;
+  let historySelectedDate = historySelectedDates[0] || persistedState.historySelectedDate;
   let historyStartMinute = persistedState.historyStartMinute;
   let historyEndMinute = persistedState.historyEndMinute;
   let historyTrendHeight = persistedState.historyTrendHeight;
   let historyRangeScopes = new Set(persistedState.historyRangeScopes);
   let historyAggregateScopes = new Set(persistedState.historyAggregateScopes);
   let historyHiddenRoomIds = new Set(persistedState.historyHiddenRoomIds);
+  let historySessionHiddenRoomIdsBackup = Array.isArray(persistedState.historySessionHiddenRoomIdsBackup)
+    ? new Set(persistedState.historySessionHiddenRoomIdsBackup)
+    : undefined;
   let historyDates = [];
   let lastHistoryDatesRefreshDate = '';
   let historyData = undefined;
@@ -110,6 +105,13 @@
   let controlPanelExpanded = persistedState.controlPanelExpanded;
   let collapsedGroupKeys = new Set(persistedState.collapsedGroupKeys);
   let openRoomGroupEditors = new Set(persistedState.openRoomGroupEditors);
+  let roomHistoryAnalysisRoomId = persistedState.roomHistoryAnalysisRoomId;
+  let roomHistoryAnalysisAnchorName = '';
+  let roomHistoryAnalysisSessions = [];
+  let roomHistoryAnalysisLoading = false;
+  let roomHistoryAnalysisLoaded = false;
+  let roomHistoryAnalysisError = '';
+  let selectedRoomSessionKey = persistedState.selectedRoomSessionKey;
   let durationTicker = undefined;
   const responsiveChartCleanups = [];
 
@@ -214,7 +216,6 @@
     updateAggregateTrendToggle(historyTrendToggle, historyTrendExpanded, '历史走势');
     rerenderLatestSnapshot();
   });
-
   trendWindowRange.addEventListener('input', () => {
     const minutes = clampTrendWindowMinutes(Number(trendWindowRange.value));
     trendWindowRange.value = String(minutes);
@@ -237,6 +238,9 @@
     }
     if (message.type === 'historyDate') {
       handleHistoryDate(message);
+    }
+    if (message.type === 'roomSessions') {
+      handleRoomSessions(message);
     }
   });
 
@@ -303,7 +307,7 @@
   }
 
   function requestHistoryDate() {
-    if (!historySelectedDate) {
+    if (historySelectedDates.length === 0) {
       return;
     }
 
@@ -314,7 +318,7 @@
     vscode.postMessage({
       type: 'loadHistoryDate',
       requestId: currentHistoryDateRequestId,
-      date: historySelectedDate,
+      dates: historySelectedDates,
       startMinute: historyStartMinute,
       endMinute: historyEndMinute
     });
@@ -330,14 +334,20 @@
     historyError = message.error || '';
     historyLoading = false;
 
-    if (!historySelectedDate || !historyDates.some((item) => item.date === historySelectedDate)) {
-      historySelectedDate = historyDates.length > 0 ? historyDates[historyDates.length - 1].date : '';
+    const availableDates = new Set(historyDates.map((item) => item.date));
+    historySelectedDates = historySelectedDates.filter((date) => availableDates.has(date));
+    if (historySelectedDates.length === 1) {
+      historyEndMinute = Math.min(historyEndMinute, HISTORY_DAY_END_MINUTE);
+    }
+    if (historySelectedDates.length === 0) {
+      historySelectedDates = historyDates.length > 0 ? [historyDates[historyDates.length - 1].date] : [];
       historyData = undefined;
       historyHiddenRoomIds.clear();
     }
+    historySelectedDate = historySelectedDates[0] || '';
 
     persistUiState();
-    if (historySelectedDate) {
+    if (historySelectedDates.length > 0) {
       requestHistoryDate();
     } else {
       renderHistoryTrend();
@@ -349,12 +359,208 @@
       return;
     }
 
-    historyData = normalizeHistoryQueryResult(message.history, historySelectedDate);
+    historyData = normalizeHistoryQueryResult(message.history, historySelectedDates);
+    if (historyData.dates.length > 0) {
+      historySelectedDates = historyData.dates;
+      historySelectedDate = historySelectedDates[0];
+      if (historySelectedDates.length === 1) {
+        historyEndMinute = Math.min(historyEndMinute, HISTORY_DAY_END_MINUTE);
+      }
+    }
     historyError = message.error || '';
     historyLoading = false;
     pruneHistoryHiddenRoomIds(historyData.rooms);
     persistUiState();
     renderHistoryTrend();
+  }
+
+  function requestRoomSessions(roomId = roomHistoryAnalysisRoomId) {
+    if (!roomId) {
+      return;
+    }
+
+    currentRoomSessionsRequestId += 1;
+    roomHistoryAnalysisLoading = true;
+    roomHistoryAnalysisLoaded = false;
+    roomHistoryAnalysisError = '';
+    vscode.postMessage({
+      type: 'loadRoomSessions',
+      requestId: currentRoomSessionsRequestId,
+      roomId
+    });
+    renderHistoryTrend();
+  }
+
+  function setHistorySessionRoom(roomId) {
+    restoreHistorySessionVisibility();
+    roomHistoryAnalysisRoomId = String(roomId || '').trim();
+    roomHistoryAnalysisAnchorName = latestSnapshot?.rooms?.find((room) => room.roomId === roomHistoryAnalysisRoomId)?.anchorName || '';
+    roomHistoryAnalysisSessions = [];
+    roomHistoryAnalysisLoading = false;
+    roomHistoryAnalysisLoaded = false;
+    roomHistoryAnalysisError = '';
+    selectedRoomSessionKey = '';
+    persistUiState();
+    renderHistoryTrend();
+    if (roomHistoryAnalysisRoomId) {
+      requestRoomSessions(roomHistoryAnalysisRoomId);
+    }
+  }
+
+  function clearHistorySessionFilter() {
+    restoreHistorySessionVisibility();
+    roomHistoryAnalysisRoomId = '';
+    roomHistoryAnalysisAnchorName = '';
+    roomHistoryAnalysisSessions = [];
+    roomHistoryAnalysisLoading = false;
+    roomHistoryAnalysisLoaded = false;
+    roomHistoryAnalysisError = '';
+    selectedRoomSessionKey = '';
+    persistUiState();
+    renderHistoryTrend();
+  }
+
+  function handleRoomSessions(message) {
+    if (
+      message.requestId !== currentRoomSessionsRequestId
+      || message.roomId !== roomHistoryAnalysisRoomId
+    ) {
+      return;
+    }
+
+    roomHistoryAnalysisAnchorName = typeof message.anchorName === 'string' ? message.anchorName : roomHistoryAnalysisAnchorName;
+    roomHistoryAnalysisSessions = normalizeRoomSessions(message.sessions);
+    roomHistoryAnalysisError = message.error || '';
+    roomHistoryAnalysisLoading = false;
+    roomHistoryAnalysisLoaded = true;
+    if (!roomHistoryAnalysisSessions.some((session) => getSessionKey(session) === selectedRoomSessionKey)) {
+      selectedRoomSessionKey = '';
+      restoreHistorySessionVisibility();
+    }
+    persistUiState();
+    renderHistoryTrend();
+  }
+
+  function normalizeRoomSessions(value) {
+    return (Array.isArray(value) ? value : [])
+      .map((session) => {
+        if (!session || typeof session !== 'object') {
+          return undefined;
+        }
+
+        const roomId = String(session.roomId || '').trim();
+        const startMs = Number(session.startMs);
+        const endMs = Number(session.endMs);
+        const peakOnline = Number(session.peakOnline);
+        const sampleCount = Number(session.sampleCount);
+        const validSampleCount = Number(session.validSampleCount);
+        if (
+          !roomId
+          || !Number.isFinite(startMs)
+          || !Number.isFinite(endMs)
+          || endMs < startMs
+          || !Number.isFinite(peakOnline)
+        ) {
+          return undefined;
+        }
+
+        return {
+          roomId,
+          startMs,
+          endMs,
+          durationMs: Math.max(0, Number(session.durationMs) || endMs - startMs),
+          peakOnline,
+          sampleCount: Number.isFinite(sampleCount) ? Math.max(0, sampleCount) : 0,
+          validSampleCount: Number.isFinite(validSampleCount) ? Math.max(0, validSampleCount) : 0
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.endMs - left.endMs);
+  }
+
+  function getSessionKey(session) {
+    return String(session.roomId) + ':' + String(session.startMs);
+  }
+
+  function restoreHistorySessionVisibility() {
+    if (!historySessionHiddenRoomIdsBackup) {
+      return;
+    }
+    historyHiddenRoomIds = new Set(historySessionHiddenRoomIdsBackup);
+    historySessionHiddenRoomIdsBackup = undefined;
+  }
+
+  function applyHistorySessionVisibility() {
+    if (!roomHistoryAnalysisRoomId || !selectedRoomSessionKey) {
+      return;
+    }
+    if (!historySessionHiddenRoomIdsBackup) {
+      historySessionHiddenRoomIdsBackup = new Set(historyHiddenRoomIds);
+    }
+    const roomIds = new Set([
+      ...(Array.isArray(historyData?.rooms) ? historyData.rooms : []).map((room) => room.roomId),
+      ...(Array.isArray(latestSnapshot?.rooms) ? latestSnapshot.rooms : []).map((room) => room.roomId)
+    ]);
+    const aggregateIds = new Set(Array.from(historyAggregateScopes).map((scope) => getAggregateSeriesId(scope)));
+    for (const roomId of roomIds) {
+      if (aggregateIds.has(roomId)) {
+        continue;
+      }
+      if (roomId === roomHistoryAnalysisRoomId) {
+        historyHiddenRoomIds.delete(roomId);
+      } else {
+        historyHiddenRoomIds.add(roomId);
+      }
+    }
+  }
+
+  function selectRoomSession(session) {
+    selectedRoomSessionKey = getSessionKey(session);
+    applyHistorySessionVisibility();
+    const paddingMs = 5 * 60 * 1000;
+    const startMs = Math.max(0, session.startMs - paddingMs);
+    const endMs = session.endMs + paddingMs;
+    const startDate = formatLocalDateKey(startMs);
+    if (!startDate) {
+      return;
+    }
+
+    const startOfDay = new Date(startMs);
+    startOfDay.setHours(0, 0, 0, 0);
+    const maxEndMs = startOfDay.getTime() + 2 * 24 * 60 * 60 * 1000 - 1;
+    const boundedEndMs = Math.min(endMs, maxEndMs);
+    const endDate = formatLocalDateKey(boundedEndMs);
+    if (!endDate) {
+      return;
+    }
+
+    historySelectedDates = startDate === endDate ? [startDate] : [startDate, endDate];
+    historySelectedDate = startDate;
+    const endOfRange = Math.max(0, Math.floor((boundedEndMs - startOfDay.getTime()) / 60000));
+    historyStartMinute = Math.max(0, Math.floor((startMs - startOfDay.getTime()) / 60000));
+    historyEndMinute = Math.min(
+      historySelectedDates.length === 2 ? HISTORY_TWO_DAY_END_MINUTE : HISTORY_DAY_END_MINUTE,
+      endOfRange
+    );
+    historyData = undefined;
+    ensureHistoryTrendExpanded();
+    persistUiState();
+    renderHistoryTrend();
+    if (historyDates.length === 0) {
+      requestHistoryDates();
+    } else {
+      requestHistoryDate();
+    }
+  }
+
+  function formatSessionDateTime(timestampMs) {
+    const date = new Date(timestampMs);
+    return String(padClockPart(date.getMonth() + 1)) + '/' + String(padClockPart(date.getDate())) + ' ' + padClockPart(date.getHours()) + ':' + padClockPart(date.getMinutes());
+  }
+
+  function formatSessionDuration(durationMs) {
+    const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+    return padClockPart(Math.floor(totalSeconds / 3600)) + ':' + padClockPart(Math.floor(totalSeconds / 60) % 60) + ':' + padClockPart(totalSeconds % 60);
   }
 
   function render(snapshot) {
@@ -377,6 +583,20 @@
     updateTrendControls(snapshot);
     updateSubpanelToggle(roomListPanel, roomListContent, roomListToggle, roomListExpanded, '直播间列表');
     renderOverviewTrend(snapshot);
+    if (roomHistoryAnalysisRoomId && !snapshot.rooms.some((room) => room.roomId === roomHistoryAnalysisRoomId)) {
+      restoreHistorySessionVisibility();
+      roomHistoryAnalysisRoomId = '';
+      roomHistoryAnalysisAnchorName = '';
+      roomHistoryAnalysisSessions = [];
+      roomHistoryAnalysisLoading = false;
+      roomHistoryAnalysisLoaded = false;
+      roomHistoryAnalysisError = '';
+      selectedRoomSessionKey = '';
+      persistUiState();
+    }
+    if (roomHistoryAnalysisRoomId && !roomHistoryAnalysisLoading && !roomHistoryAnalysisLoaded) {
+      requestRoomSessions(roomHistoryAnalysisRoomId);
+    }
     renderHistoryTrend();
 
     const liveCount = snapshot.rooms.filter((room) => room.status === 'live').length;
@@ -723,10 +943,14 @@
 
     const actions = document.createElement('div');
     actions.className = 'room-actions';
+    actions.append(actionButton('弹', '打开实时弹幕机', () => vscode.postMessage({ type: 'openDanmaku', roomId: room.roomId })));
     actions.append(actionButton('分', '设置分组', () => toggleRoomGroupEditor(room.roomId)));
     actions.append(actionButton('↗', '打开直播间', () => vscode.postMessage({ type: 'openRoom', roomId: room.roomId })));
     actions.append(actionButton('×', '删除直播间', () => {
       openRoomGroupEditors.delete(room.roomId);
+      if (roomHistoryAnalysisRoomId === room.roomId) {
+        clearHistorySessionFilter();
+      }
       vscode.postMessage({ type: 'removeRoom', roomId: room.roomId });
     }));
 
@@ -786,6 +1010,7 @@
 
     const actions = document.createElement('div');
     actions.className = 'compact-actions';
+    actions.append(actionButton('弹', '打开实时弹幕机', () => vscode.postMessage({ type: 'openDanmaku', roomId: room.roomId })));
     actions.append(actionButton('分', '设置分组', () => toggleRoomGroupEditor(room.roomId)));
 
     row.append(statusDot, anchor, online, guardFleet, duration, actions);
@@ -994,7 +1219,7 @@
     const roomColorIndexes = new Map(snapshot.rooms.map((room, index) => [room.roomId, index]));
     const buildRoomSeries = (rooms) => rooms.map((room, index) => ({
       room,
-      color: OVERVIEW_TREND_COLORS[(roomColorIndexes.get(room.roomId) ?? index) % OVERVIEW_TREND_COLORS.length],
+      color: getTrendColor(roomColorIndexes.get(room.roomId) ?? index),
       points: (snapshot.onlineHistory?.[room.roomId] || []).filter(
         ([timestamp]) => timestamp >= overviewWindow.start && timestamp <= overviewWindow.end
       )
@@ -1019,17 +1244,17 @@
 
     if (visibleSeries.length === 0) {
       panel.append(overviewPlaceholder('已隐藏全部主播', overviewTrendHeight));
-      panel.append(overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries));
+      panel.append(overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries, () => setAllOverviewSeriesVisibility(series, false), () => setAllOverviewSeriesVisibility(series, true)));
       return panel;
     }
 
     if (!hasDrawableLine || !scale) {
       panel.append(overviewPlaceholder('数据积累中', overviewTrendHeight));
-      panel.append(overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries));
+      panel.append(overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries, () => setAllOverviewSeriesVisibility(series, false), () => setAllOverviewSeriesVisibility(series, true)));
       return panel;
     }
 
-    panel.append(buildOverviewChart(visibleSeries, overviewWindow, scale, overviewTrendHeight), overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries));
+    panel.append(buildOverviewChart(visibleSeries, overviewWindow, scale, overviewTrendHeight), overviewLegend(series, overviewHiddenRoomIds, toggleOverviewSeries, () => setAllOverviewSeriesVisibility(series, false), () => setAllOverviewSeriesVisibility(series, true)));
     return panel;
   }
 
@@ -1051,11 +1276,15 @@
     }
   }
 
-  function normalizeHistoryQueryResult(value, fallbackDate = '') {
+  function normalizeHistoryQueryResult(value, fallbackDates = []) {
     const safeValue = value && typeof value === 'object' ? value : {};
-    const date = typeof safeValue.date === 'string' ? safeValue.date : fallbackDate;
+    const dates = Array.isArray(safeValue.dates) && safeValue.dates.length > 0
+      ? safeValue.dates.filter((date) => typeof date === 'string')
+      : (Array.isArray(fallbackDates) ? fallbackDates : []);
+    const date = typeof safeValue.date === 'string' ? safeValue.date : dates[0] || '';
     const startMs = Number.isFinite(safeValue.startMs) ? safeValue.startMs : 0;
     const endMs = Number.isFinite(safeValue.endMs) ? safeValue.endMs : startMs;
+    const boundaryMs = Number.isFinite(safeValue.boundaryMs) ? safeValue.boundaryMs : undefined;
     const rooms = (Array.isArray(safeValue.rooms) ? safeValue.rooms : [])
       .map((room) => {
         if (!room || typeof room !== 'object') {
@@ -1095,7 +1324,94 @@
       })
       .filter(Boolean);
 
-    return { date, startMs, endMs, rooms };
+    return { date, dates, startMs, endMs, boundaryMs, rooms };
+  }
+
+  function buildHistorySessionFilter() {
+    const field = document.createElement('div');
+    field.className = 'history-session-filter';
+
+    const heading = buildTrendFieldHeading('主播 / 直播场次');
+    const controls = document.createElement('div');
+    controls.className = 'history-session-selects';
+
+    const roomSelect = document.createElement('select');
+    roomSelect.className = 'history-session-select';
+    roomSelect.setAttribute('aria-label', '选择主播');
+
+    const roomPlaceholder = document.createElement('option');
+    roomPlaceholder.value = '';
+    roomPlaceholder.textContent = '选择主播';
+    roomSelect.append(roomPlaceholder);
+
+    for (const room of Array.isArray(latestSnapshot?.rooms) ? latestSnapshot.rooms : []) {
+      const option = document.createElement('option');
+      option.value = room.roomId;
+      option.textContent = (room.anchorName || room.roomId) + ' · ' + room.roomId;
+      roomSelect.append(option);
+    }
+    roomSelect.value = roomHistoryAnalysisRoomId || '';
+
+    const sessionSelect = document.createElement('select');
+    sessionSelect.className = 'history-session-select';
+    sessionSelect.setAttribute('aria-label', '选择直播场次');
+
+    const sessionPlaceholder = document.createElement('option');
+    sessionPlaceholder.value = '';
+    sessionPlaceholder.textContent = roomHistoryAnalysisLoading
+      ? '正在读取直播场次'
+      : roomHistoryAnalysisError
+        ? '场次读取失败'
+        : roomHistoryAnalysisRoomId && !roomHistoryAnalysisLoaded
+          ? '准备读取直播场次'
+          : roomHistoryAnalysisSessions.length > 0
+            ? '选择直播场次'
+            : roomHistoryAnalysisRoomId
+              ? '暂无可识别的直播场次'
+              : '先选择主播';
+    sessionSelect.append(sessionPlaceholder);
+
+    for (const session of roomHistoryAnalysisSessions) {
+      const option = document.createElement('option');
+      option.value = getSessionKey(session);
+      option.textContent =
+        formatSessionDateTime(session.startMs) + ' - ' + formatSessionDateTime(session.endMs)
+        + ' · ' + formatSessionDuration(session.durationMs)
+        + ' · 峰值 ' + formatNumber(session.peakOnline);
+      sessionSelect.append(option);
+    }
+    sessionSelect.value = selectedRoomSessionKey || '';
+    sessionSelect.disabled = !roomHistoryAnalysisRoomId
+      || roomHistoryAnalysisLoading
+      || Boolean(roomHistoryAnalysisError)
+      || !roomHistoryAnalysisLoaded;
+
+    roomSelect.addEventListener('change', () => {
+      setHistorySessionRoom(roomSelect.value);
+    });
+    sessionSelect.addEventListener('change', () => {
+      const session = roomHistoryAnalysisSessions.find(
+        (item) => getSessionKey(item) === sessionSelect.value
+      );
+      if (session) {
+        selectRoomSession(session);
+      } else {
+        restoreHistorySessionVisibility();
+        selectedRoomSessionKey = '';
+        persistUiState();
+        renderHistoryTrend();
+      }
+    });
+
+    controls.append(roomSelect, sessionSelect);
+    if (roomHistoryAnalysisError && roomHistoryAnalysisRoomId) {
+      controls.append(actionButton('重试', '重新读取该主播的直播场次', () => requestRoomSessions()));
+    }
+    if (roomHistoryAnalysisRoomId) {
+      controls.append(actionButton('清除', '清除主播和直播场次筛选', clearHistorySessionFilter));
+    }
+    field.append(heading, controls);
+    return field;
   }
 
   function buildHistoryTrend() {
@@ -1119,7 +1435,7 @@
 
     const datePicker = buildHistoryCalendar();
     const timeControls = buildHistoryTimeControls();
-    header.append(scopeField, datePicker, timeControls, buildAggregateChartHeightControl('history'));
+    header.append(buildHistorySessionFilter(), scopeField, datePicker, timeControls, buildAggregateChartHeightControl('history'));
     panel.append(header);
 
     if (historyLoading) {
@@ -1137,7 +1453,7 @@
       return panel;
     }
 
-    if (!historySelectedDate || !historyData) {
+    if (historySelectedDates.length === 0 || !historyData) {
       panel.append(overviewPlaceholder('请选择有数据的日期', historyTrendHeight));
       return panel;
     }
@@ -1145,7 +1461,8 @@
     const historyWindow = {
       start: historyData.startMs,
       end: Math.max(historyData.startMs, historyData.endMs),
-      windowMinutes: Math.max(1, Math.round((Math.max(historyData.startMs, historyData.endMs) - historyData.startMs + 1) / 60000))
+      windowMinutes: Math.max(1, Math.round((Math.max(historyData.startMs, historyData.endMs) - historyData.startMs + 1) / 60000)),
+      boundaryMs: historyData.boundaryMs
     };
     const candidateRooms = getHistoryCandidateRoomsForScopes(historyRooms, historyRangeScopes);
     const roomColorIndexes = new Map(historyRooms.map((room, index) => [room.roomId, index]));
@@ -1154,7 +1471,7 @@
         roomId: room.roomId,
         anchorName: room.anchorName || room.roomId
       },
-      color: OVERVIEW_TREND_COLORS[(roomColorIndexes.get(room.roomId) ?? index) % OVERVIEW_TREND_COLORS.length],
+      color: getTrendColor(roomColorIndexes.get(room.roomId) ?? index),
       points: room.points || []
     }));
     const roomSeries = buildRoomSeries(candidateRooms);
@@ -1176,17 +1493,17 @@
 
     if (visibleSeries.length === 0) {
       panel.append(overviewPlaceholder('已隐藏全部主播', historyTrendHeight));
-      panel.append(overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries));
+      panel.append(overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries, () => setAllHistorySeriesVisibility(series, false), () => setAllHistorySeriesVisibility(series, true)));
       return panel;
     }
 
     if (!hasDrawableLine || !scale) {
       panel.append(overviewPlaceholder('数据积累中', historyTrendHeight));
-      panel.append(overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries));
+      panel.append(overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries, () => setAllHistorySeriesVisibility(series, false), () => setAllHistorySeriesVisibility(series, true)));
       return panel;
     }
 
-    panel.append(buildOverviewChart(visibleSeries, historyWindow, scale, historyTrendHeight), overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries));
+    panel.append(buildOverviewChart(visibleSeries, historyWindow, scale, historyTrendHeight, 'history'), overviewLegend(series, historyHiddenRoomIds, toggleHistorySeries, () => setAllHistorySeriesVisibility(series, false), () => setAllHistorySeriesVisibility(series, true)));
     return panel;
   }
 
@@ -1206,7 +1523,9 @@
         return;
       }
 
+      historySelectedDates = [input.value];
       historySelectedDate = input.value;
+      historyEndMinute = Math.min(historyEndMinute, historyRangeMaxMinute());
       historyHiddenRoomIds.clear();
       persistUiState();
       ensureHistoryTrendExpanded();
@@ -1228,15 +1547,24 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'history-date-button';
-      button.classList.toggle('active', item.date === historySelectedDate);
+      button.classList.toggle('active', historySelectedDates.includes(item.date));
       button.title = `${item.roomIds.length} 个直播间，${item.pointCount} 个采样点`;
       button.textContent = formatHistoryDateLabel(item.date);
       button.addEventListener('click', () => {
-        if (historySelectedDate === item.date) {
-          return;
+        const selectedIndex = historySelectedDates.indexOf(item.date);
+        if (historySelectedDates.length === 2 && selectedIndex >= 0) {
+          historySelectedDates = historySelectedDates.filter((date) => date !== item.date);
+        } else if (historySelectedDates.length === 1 && selectedIndex < 0 && areAdjacentHistoryDates(historySelectedDates[0], item.date)) {
+          historySelectedDates = [...historySelectedDates, item.date].sort();
+          historyEndMinute = HISTORY_TWO_DAY_END_MINUTE;
+        } else if (selectedIndex < 0) {
+          historySelectedDates = [item.date];
+          historyEndMinute = Math.min(historyEndMinute, HISTORY_DAY_END_MINUTE);
         }
-
-        historySelectedDate = item.date;
+        if (historySelectedDates.length === 1) {
+          historyEndMinute = Math.min(historyEndMinute, HISTORY_DAY_END_MINUTE);
+        }
+        historySelectedDate = historySelectedDates[0] || '';
         historyHiddenRoomIds.clear();
         persistUiState();
         ensureHistoryTrendExpanded();
@@ -1276,8 +1604,9 @@
 
     const updatePreview = (activeInput) => {
       activateHandle(activeInput);
-      const start = clampHistoryMinute(Number(startInput.value), HISTORY_DAY_START_MINUTE);
-      const end = clampHistoryMinute(Number(endInput.value), HISTORY_DAY_END_MINUTE);
+      const maxMinute = historyRangeMaxMinute();
+      const start = clampHistoryMinute(Number(startInput.value), HISTORY_DAY_START_MINUTE, maxMinute);
+      const end = clampHistoryMinute(Number(endInput.value), HISTORY_DAY_END_MINUTE, maxMinute);
       if (start > end) {
         if (activeInput === startInput) {
           endInput.value = String(start);
@@ -1322,7 +1651,10 @@
 
     const endpoints = document.createElement('div');
     endpoints.className = 'history-range-endpoints';
-    endpoints.append(textSpan('00:00'), textSpan('23:59'));
+    endpoints.append(
+      textSpan(formatHistoryMinuteLabel(HISTORY_DAY_START_MINUTE)),
+      textSpan(formatHistoryMinuteLabel(historyRangeMaxMinute()))
+    );
 
     controls.append(buildTrendFieldHeading('时间范围', label), slider, endpoints);
     return controls;
@@ -1347,9 +1679,9 @@
     input.className = 'history-range-input';
     input.type = 'range';
     input.min = String(HISTORY_DAY_START_MINUTE);
-    input.max = String(HISTORY_DAY_END_MINUTE);
+    input.max = String(historyRangeMaxMinute());
     input.step = '1';
-    input.value = String(clampHistoryMinute(minuteValue, HISTORY_DAY_START_MINUTE));
+    input.value = String(clampHistoryMinute(minuteValue, HISTORY_DAY_START_MINUTE, historyRangeMaxMinute()));
     input.setAttribute('aria-label', label);
     input.title = label;
     return input;
@@ -1357,7 +1689,7 @@
 
   function updateHistoryRangeSelection(selection, startMinute, endMinute) {
     const normalized = normalizeHistoryMinuteRange(startMinute, endMinute);
-    const total = HISTORY_DAY_END_MINUTE - HISTORY_DAY_START_MINUTE;
+    const total = historyRangeMaxMinute() - HISTORY_DAY_START_MINUTE;
     const left = ((normalized.start - HISTORY_DAY_START_MINUTE) / total) * 100;
     const right = 100 - ((normalized.end - HISTORY_DAY_START_MINUTE) / total) * 100;
     selection.style.left = `${left}%`;
@@ -1365,8 +1697,9 @@
   }
 
   function normalizeHistoryMinuteRange(startMinute, endMinute) {
-    const start = clampHistoryMinute(startMinute, HISTORY_DAY_START_MINUTE);
-    const end = clampHistoryMinute(endMinute, HISTORY_DAY_END_MINUTE);
+    const maxMinute = historyRangeMaxMinute();
+    const start = clampHistoryMinute(startMinute, HISTORY_DAY_START_MINUTE, maxMinute);
+    const end = clampHistoryMinute(endMinute, HISTORY_DAY_END_MINUTE, maxMinute);
     if (start <= end) {
       return { start, end };
     }
@@ -1374,9 +1707,44 @@
     return { start: end, end: start };
   }
 
+  function historyRangeMaxMinute() {
+    return historySelectedDates.length === 2 ? HISTORY_TWO_DAY_END_MINUTE : HISTORY_DAY_END_MINUTE;
+  }
+
+  function areAdjacentHistoryDates(left, right) {
+    if (!left || !right || left === right) {
+      return false;
+    }
+
+    return Math.abs(getHistoryDateStartMs(left) - getHistoryDateStartMs(right)) === 24 * 60 * 60 * 1000;
+  }
+
+  function getHistoryDateStartMs(dateText) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateText));
+    if (!match) {
+      return Number.NaN;
+    }
+
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0).getTime();
+  }
+
+  function formatHistoryMinuteLabel(minute) {
+    if (!historySelectedDates[0]) {
+      return formatMinuteInput(minute);
+    }
+
+    const timestamp = getHistoryDateStartMs(historySelectedDates[0]) + Math.max(0, Math.floor(minute)) * 60 * 1000;
+    return formatHistoryDateTime(timestamp);
+  }
+
+  function formatHistoryDateTime(timestamp) {
+    const date = new Date(timestamp);
+    return `${padClockPart(date.getMonth() + 1)}/${padClockPart(date.getDate())} ${padClockPart(date.getHours())}:${padClockPart(date.getMinutes())}`;
+  }
+
   function formatHistoryRangeLabel(startMinute, endMinute) {
     const normalized = normalizeHistoryMinuteRange(startMinute, endMinute);
-    return `${formatMinuteInput(normalized.start)} - ${formatMinuteInput(normalized.end)}`;
+    return `${formatHistoryMinuteLabel(normalized.start)} - ${formatHistoryMinuteLabel(normalized.end)}`;
   }
 
   function historyModeButton(text, mode, title) {
@@ -1438,6 +1806,18 @@
     }
 
     return '已选范围在当前时间段暂无历史采样';
+  }
+
+  function setAllHistorySeriesVisibility(series, visible) {
+    if (visible) {
+      historyHiddenRoomIds.clear();
+    } else {
+      for (const item of series) {
+        historyHiddenRoomIds.add(item.room.roomId);
+      }
+    }
+    persistUiState();
+    renderHistoryTrend();
   }
 
   function toggleHistorySeries(roomId) {
@@ -1523,7 +1903,7 @@
           roomId: getAggregateSeriesId(scope),
           anchorName: getAggregateSeriesLabel(scope, roomSeries, snapshot)
         },
-        color: getAggregateSeriesColor(scope, snapshot, index),
+        color: getAggregateSeriesColor(scope, snapshot, index, snapshot?.rooms?.length || roomSeries.length),
         points: sumSeriesPoints(roomSeries),
         aggregate: true
       }];
@@ -1546,14 +1926,26 @@
     return `${AGGREGATE_SERIES_ID_PREFIX}${scope}`;
   }
 
-  function getAggregateSeriesColor(scope, snapshot, fallbackIndex) {
+  function getAggregateSeriesColor(scope, snapshot, fallbackIndex, colorOffset = 0) {
+    const baseColorIndex = Math.max(colorOffset, snapshot?.rooms?.length || 0);
     const builtInIndex = ['all', 'live', 'withData'].indexOf(scope);
     if (builtInIndex >= 0) {
-      return AGGREGATE_TREND_COLORS[builtInIndex % AGGREGATE_TREND_COLORS.length];
+      return getTrendColor(baseColorIndex + builtInIndex);
     }
     const groupIndex = getCustomGroups(snapshot).findIndex((group) => getGroupScope(group.id) === scope);
     const colorIndex = groupIndex >= 0 ? groupIndex + 3 : fallbackIndex;
-    return AGGREGATE_TREND_COLORS[colorIndex % AGGREGATE_TREND_COLORS.length];
+    return getTrendColor(baseColorIndex + colorIndex);
+  }
+
+  function getTrendColor(index) {
+    if (index < TREND_COLORS.length) {
+      return TREND_COLORS[index];
+    }
+
+    const hue = (index * 137.508) % 360;
+    const saturation = index % 2 === 0 ? 78 : 68;
+    const lightness = index % 3 === 0 ? 60 : 54;
+    return `hsl(${hue.toFixed(1)} ${saturation}% ${lightness}%)`;
   }
 
   function toggleScope(scopes, scope) {
@@ -1658,7 +2050,7 @@
     return placeholder;
   }
 
-  function buildOverviewChart(series, trendWindow, scale, height = AGGREGATE_CHART_DEFAULT_HEIGHT) {
+  function buildOverviewChart(series, trendWindow, scale, height = AGGREGATE_CHART_DEFAULT_HEIGHT, axisPrefix = 'overview') {
     const paddingLeft = 56;
     const paddingRight = 14;
     const paddingTop = 22;
@@ -1680,7 +2072,7 @@
     };
 
     observeResponsiveSvg(chart, OVERVIEW_CHART_MIN_WIDTH, (width) => {
-      const svg = buildOverviewSvg(width, chartHeight, series, trendWindow, chartScale, paddingLeft, paddingRight, paddingTop, paddingBottom);
+      const svg = buildOverviewSvg(width, chartHeight, series, trendWindow, chartScale, paddingLeft, paddingRight, paddingTop, paddingBottom, axisPrefix);
       chartState.width = width;
       chartState.height = chartHeight;
       chartState.guide = svg.guide;
@@ -1704,7 +2096,7 @@
     return chart;
   }
 
-  function buildOverviewSvg(width, height, series, trendWindow, scale, paddingLeft, paddingRight, paddingTop, paddingBottom) {
+  function buildOverviewSvg(width, height, series, trendWindow, scale, paddingLeft, paddingRight, paddingTop, paddingBottom, axisPrefix = 'overview') {
     const svg = createSvgElement('svg');
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     svg.setAttribute('width', String(width));
@@ -1712,7 +2104,7 @@
     svg.setAttribute('role', 'img');
     svg.setAttribute('aria-label', '直播中主播在线人数总览走势');
 
-    appendTrendAxis(svg, scale, trendWindow, width, height, paddingLeft, paddingRight, paddingTop, paddingBottom, 'overview');
+    appendTrendAxis(svg, scale, trendWindow, width, height, paddingLeft, paddingRight, paddingTop, paddingBottom, axisPrefix);
 
     for (const item of series) {
       const segments = buildTrendSegments(item.points, trendWindow, scale, width, height, paddingLeft, paddingRight, paddingTop, paddingBottom);
@@ -1743,7 +2135,13 @@
     };
   }
 
-  function overviewLegend(series, hiddenRoomIds = overviewHiddenRoomIds, onToggle = toggleOverviewSeries) {
+  function overviewLegend(
+    series,
+    hiddenRoomIds = overviewHiddenRoomIds,
+    onToggle = toggleOverviewSeries,
+    onHideAll,
+    onShowAll
+  ) {
     const legend = document.createElement('div');
     legend.className = 'overview-legend';
 
@@ -1761,6 +2159,39 @@
         return rightOnline - leftOnline || left.index - right.index;
       });
 
+    const hideAll = typeof onHideAll === 'function'
+      ? onHideAll
+      : () => {
+        for (const { item } of sortedSeries) {
+          hiddenRoomIds.add(item.room.roomId);
+        }
+      };
+    const showAll = typeof onShowAll === 'function'
+      ? onShowAll
+      : () => hiddenRoomIds.clear();
+
+    const actions = document.createElement('div');
+    actions.className = 'overview-legend-actions';
+
+    const hideAllButton = document.createElement('button');
+    hideAllButton.type = 'button';
+    hideAllButton.className = 'overview-legend-action';
+    hideAllButton.textContent = '隐藏全部';
+    hideAllButton.title = '隐藏当前图例中的全部曲线';
+    hideAllButton.addEventListener('click', hideAll);
+
+    const showAllButton = document.createElement('button');
+    showAllButton.type = 'button';
+    showAllButton.className = 'overview-legend-action';
+    showAllButton.textContent = '全部显示';
+    showAllButton.title = '显示当前图例中的全部曲线';
+    showAllButton.addEventListener('click', showAll);
+
+    actions.append(hideAllButton, showAllButton);
+    legend.append(actions);
+
+    const list = document.createElement('div');
+    list.className = 'overview-legend-list';
     for (const { item, latestPoint } of sortedSeries) {
       const hidden = hiddenRoomIds.has(item.room.roomId);
       const entry = document.createElement('button');
@@ -1787,10 +2218,21 @@
       value.textContent = latestPoint ? formatNumber(latestPoint[1]) : '--';
 
       entry.append(swatch, name, value);
-      legend.append(entry);
+      list.append(entry);
     }
-
+    legend.append(list);
     return legend;
+  }
+
+  function setAllOverviewSeriesVisibility(series, visible) {
+    if (visible) {
+      overviewHiddenRoomIds.clear();
+    } else {
+      for (const item of series) {
+        overviewHiddenRoomIds.add(item.room.roomId);
+      }
+    }
+    rerenderLatestSnapshot();
   }
 
   function toggleOverviewSeries(roomId) {
@@ -1867,7 +2309,7 @@
     tooltip.replaceChildren();
     const time = document.createElement('div');
     time.className = 'overview-tooltip-time';
-    time.textContent = formatTime(timestamp);
+    time.textContent = formatTime(timestamp, Boolean(trendWindow.boundaryMs));
     tooltip.append(time);
 
     for (const row of rows.sort((left, right) => right.online - left.online)) {
@@ -1935,7 +2377,21 @@
       grid.setAttribute('y2', String(plotBottom));
       grid.setAttribute('class', `${prefix}-grid-line`);
       const anchor = timestamp === trendWindow.start ? 'start' : timestamp === trendWindow.end ? 'end' : 'middle';
-      svg.append(grid, svgText(formatShortTime(timestamp), x, height - 6, `${prefix}-axis-text`, anchor));
+      svg.append(grid, svgText(formatShortTime(timestamp, Boolean(trendWindow.boundaryMs)), x, height - 6, `${prefix}-axis-text`, anchor));
+    }
+
+    if (Number.isFinite(trendWindow.boundaryMs)
+      && trendWindow.boundaryMs > trendWindow.start
+      && trendWindow.boundaryMs < trendWindow.end) {
+      const boundaryRatio = (trendWindow.boundaryMs - trendWindow.start) / Math.max(1, trendWindow.end - trendWindow.start);
+      const boundaryX = plotLeft + boundaryRatio * plotWidth;
+      const boundary = createSvgElement('line');
+      boundary.setAttribute('x1', formatSvgNumber(boundaryX));
+      boundary.setAttribute('x2', formatSvgNumber(boundaryX));
+      boundary.setAttribute('y1', String(plotTop));
+      boundary.setAttribute('y2', String(plotBottom));
+      boundary.setAttribute('class', `${prefix}-day-boundary`);
+      svg.append(boundary, svgText(formatShortTime(trendWindow.boundaryMs, true), boundaryX, plotTop - 6, `${prefix}-axis-text`, 'middle'));
     }
 
     const yAxis = createSvgElement('line');
@@ -2316,7 +2772,11 @@
       overviewHiddenRoomIds: Array.from(overviewHiddenRoomIds),
       collapsedGroupKeys: Array.from(collapsedGroupKeys),
       openRoomGroupEditors: Array.from(openRoomGroupEditors),
+      roomHistoryAnalysisRoomId,
+      selectedRoomSessionKey,
+      historySessionHiddenRoomIdsBackup: historySessionHiddenRoomIdsBackup ? Array.from(historySessionHiddenRoomIdsBackup) : undefined,
       historyTrendExpanded,
+      historySelectedDates,
       historySelectedDate,
       historyStartMinute,
       historyEndMinute,
@@ -2362,9 +2822,19 @@
       openRoomGroupEditors: Array.isArray(safeState.openRoomGroupEditors)
         ? safeState.openRoomGroupEditors.filter((roomId) => typeof roomId === 'string')
         : [],
+      roomHistoryAnalysisRoomId: typeof safeState.roomHistoryAnalysisRoomId === 'string'
+        ? safeState.roomHistoryAnalysisRoomId
+        : '',
+      selectedRoomSessionKey: typeof safeState.selectedRoomSessionKey === 'string'
+        ? safeState.selectedRoomSessionKey
+        : '',
+      historySessionHiddenRoomIdsBackup: Array.isArray(safeState.historySessionHiddenRoomIdsBackup)
+        ? safeState.historySessionHiddenRoomIdsBackup.filter((roomId) => typeof roomId === 'string')
+        : undefined,
       historyTrendExpanded: Boolean(safeState.historyTrendExpanded),
+      historySelectedDates: normalizePersistedHistoryDates(safeState),
       historySelectedDate: typeof safeState.historySelectedDate === 'string' ? safeState.historySelectedDate : '',
-      ...normalizePersistedHistoryRange(safeState),
+      ...normalizePersistedHistoryRange(safeState, normalizePersistedHistoryDates(safeState)),
       historyTrendHeight: clampAggregateChartHeight(Number(safeState.historyTrendHeight)),
       historyRangeScopes: normalizePersistedRangeScopes(
         safeState.historyRangeScopes,
@@ -2401,11 +2871,27 @@
     );
   }
 
-  function normalizePersistedHistoryRange(safeState) {
-    const normalized = normalizeHistoryMinuteRange(Number(safeState.historyStartMinute), Number(safeState.historyEndMinute));
+  function normalizePersistedHistoryDates(safeState) {
+    const candidates = Array.isArray(safeState.historySelectedDates)
+      ? safeState.historySelectedDates
+      : typeof safeState.historySelectedDate === 'string' ? [safeState.historySelectedDate] : [];
+    const dates = Array.from(new Set(candidates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))).sort();
+    if (dates.length <= 1) {
+      return dates;
+    }
+
+    return dates.length === 2 && areAdjacentHistoryDates(dates[0], dates[1]) ? dates : [dates[0]];
+  }
+
+  function normalizePersistedHistoryRange(safeState, dates) {
+    const maxMinute = dates.length === 2 ? HISTORY_TWO_DAY_END_MINUTE : HISTORY_DAY_END_MINUTE;
+    const startValue = Number(safeState.historyStartMinute);
+    const endValue = Number(safeState.historyEndMinute);
+    const start = Number.isFinite(startValue) ? Math.min(maxMinute, Math.max(0, Math.floor(startValue))) : 0;
+    const end = Number.isFinite(endValue) ? Math.min(maxMinute, Math.max(0, Math.floor(endValue))) : maxMinute;
     return {
-      historyStartMinute: normalized.start,
-      historyEndMinute: normalized.end
+      historyStartMinute: Math.min(start, end),
+      historyEndMinute: Math.max(start, end)
     };
   }
 
@@ -2631,12 +3117,12 @@
     return Math.min(AGGREGATE_CHART_MAX_HEIGHT, Math.max(AGGREGATE_CHART_MIN_HEIGHT, Math.round(value)));
   }
 
-  function clampHistoryMinute(value, fallback) {
+  function clampHistoryMinute(value, fallback, maxMinute = HISTORY_DAY_END_MINUTE) {
     if (!Number.isFinite(value)) {
       return fallback;
     }
 
-    return Math.min(23 * 60 + 59, Math.max(0, Math.floor(value)));
+    return Math.min(maxMinute, Math.max(0, Math.floor(value)));
   }
 
   function formatMinuteInput(minute) {
@@ -2739,14 +3225,18 @@
     return typeof value === 'number' ? formatNumber(value) : '-';
   }
 
-  function formatTime(timestamp) {
+  function formatTime(timestamp, includeDate = false) {
     if (!timestamp) {
       return '-';
     }
-    return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false });
+    return includeDate ? formatHistoryDateTime(timestamp) : new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false });
   }
 
-  function formatShortTime(timestamp) {
+  function formatShortTime(timestamp, includeDate = false) {
+    if (includeDate) {
+      return formatHistoryDateTime(timestamp);
+    }
+
     return new Date(timestamp).toLocaleTimeString('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',

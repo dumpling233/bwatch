@@ -23,15 +23,8 @@ input {
   display: flex;
   min-width: 240px;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 8px;
-}
-
-.toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(2, 28px);
-  align-items: center;
   gap: 4px;
+  padding: 4px 6px;
 }
 
 input {
@@ -107,7 +100,7 @@ button:hover {
   display: grid;
   min-width: 0;
   border: 1px solid var(--vscode-panel-border);
-  border-radius: 6px;
+  border-radius: 4px;
   background: color-mix(in srgb, var(--vscode-sideBar-background), var(--vscode-editor-background) 36%);
   overflow: hidden;
 }
@@ -129,9 +122,9 @@ button:hover {
   grid-template-columns: 28px minmax(0, 1fr) max-content;
   align-items: center;
   min-width: 0;
-  min-height: 34px;
+  min-height: 32px;
   border-bottom: 1px solid var(--vscode-panel-border);
-  padding: 3px 6px 3px 8px;
+  padding: 2px 4px 2px 6px;
 }
 
 .room-list-panel-title {
@@ -148,7 +141,7 @@ button:hover {
   grid-template-columns: repeat(2, 28px);
   justify-content: end;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 
 .subpanel-titlebar {
@@ -156,9 +149,9 @@ button:hover {
   grid-template-columns: 28px minmax(0, 1fr) max-content;
   align-items: center;
   min-width: 0;
-  min-height: 34px;
+  min-height: 32px;
   border-bottom: 1px solid var(--vscode-panel-border);
-  padding: 3px 6px 3px 8px;
+  padding: 2px 4px 2px 6px;
 }
 
 .subpanel-toggle,
@@ -175,7 +168,7 @@ button:hover {
 .room-list-panel-content {
   display: grid;
   min-width: 0;
-  padding: 6px 8px 8px;
+  padding: 4px 6px 6px;
 }
 
 .subpanel-title {
@@ -540,6 +533,14 @@ button:hover {
   grid-template-columns: 28px minmax(0, 1fr) max-content;
 }
 
+.aggregate-panel-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 28px);
+  justify-content: end;
+  align-items: center;
+  gap: 2px;
+}
+
 .disclosure-icon {
   display: inline-block;
   width: 7px;
@@ -557,7 +558,7 @@ button:hover {
 .aggregate-panel-content {
   gap: 8px;
   min-width: 0;
-  padding: 8px;
+  padding: 6px;
 }
 
 .overview-trend-panel {
@@ -847,10 +848,19 @@ button:hover {
 }
 
 .trend-grid-line,
-.overview-grid-line {
+.overview-grid-line,
+.history-grid-line {
   stroke: var(--vscode-panel-border);
   stroke-width: 1;
   opacity: 0.72;
+  vector-effect: non-scaling-stroke;
+}
+
+.history-day-boundary {
+  stroke: var(--vscode-focusBorder);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  opacity: 0.95;
   vector-effect: non-scaling-stroke;
 }
 
@@ -876,13 +886,44 @@ button:hover {
 }
 
 .overview-legend {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+  gap: 8px;
+  color: var(--vscode-foreground);
+  font-size: 11px;
+}
+
+.overview-legend-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.overview-legend-action {
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-panel-border));
+  border-radius: 3px;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, transparent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.overview-legend-action:hover,
+.overview-legend-action:focus-visible {
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
+.overview-legend-list {
   display: flex;
   flex-wrap: wrap;
   min-width: 0;
   max-width: 100%;
   gap: 6px 10px;
-  color: var(--vscode-foreground);
-  font-size: 11px;
 }
 
 .overview-legend-item {
@@ -1054,7 +1095,7 @@ button:hover {
 }
 
 .room-group-header.is-compact {
-  grid-template-columns: 12px minmax(82px, 1fr) 58px 58px 66px 28px;
+  grid-template-columns: 12px minmax(82px, 1fr) 58px 58px 66px 51px;
   gap: 7px;
   width: calc(100% - 6px);
   min-height: 28px;
@@ -1062,7 +1103,7 @@ button:hover {
 }
 
 .room-group-header.is-detail {
-  grid-template-columns: 10px minmax(0, 1fr) 92px 72px 78px 72px 86px;
+  grid-template-columns: 10px minmax(0, 1fr) 92px 72px 78px 72px 115px;
   gap: 8px;
   width: calc(100% - 6px);
   min-height: 34px;
@@ -1160,7 +1201,7 @@ button:hover {
 
 .room {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) 92px 72px 78px 72px 86px;
+  grid-template-columns: 10px minmax(0, 1fr) 92px 72px 78px 72px 115px;
   align-items: center;
   gap: 6px;
   border: 1px solid var(--vscode-panel-border);
@@ -1328,7 +1369,7 @@ button:hover {
 
 .room-compact {
   display: grid;
-  grid-template-columns: 12px minmax(82px, 1fr) 58px 58px 66px 28px;
+  grid-template-columns: 12px minmax(82px, 1fr) 58px 58px 66px 51px;
   align-items: center;
   gap: 7px;
   min-height: 28px;
@@ -1344,6 +1385,7 @@ button:hover {
 .compact-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 3px;
 }
 
 .compact-actions button {
@@ -1415,14 +1457,16 @@ button:hover {
 }
 
 .trend-axis-line,
-.overview-axis-line {
+.overview-axis-line,
+.history-axis-line {
   stroke: var(--vscode-panel-border);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
 .trend-axis-text,
-.overview-axis-text {
+.overview-axis-text,
+.history-axis-text {
   fill: var(--vscode-descriptionForeground);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -1467,11 +1511,11 @@ button:hover {
   }
 
   .room {
-    grid-template-columns: 10px minmax(0, 1fr) 58px 58px 58px 86px;
+    grid-template-columns: 10px minmax(0, 1fr) 58px 58px 58px 115px;
   }
 
   .room-group-header.is-detail {
-    grid-template-columns: 10px minmax(0, 1fr) 58px 58px 58px 86px;
+    grid-template-columns: 10px minmax(0, 1fr) 58px 58px 58px 115px;
     min-height: 52px;
   }
 
@@ -1512,14 +1556,53 @@ button:hover {
   }
 
   .room-compact {
-    grid-template-columns: 12px minmax(74px, 1fr) 46px 46px 62px 24px;
+    grid-template-columns: 12px minmax(74px, 1fr) 46px 46px 62px 51px;
     gap: 6px;
     font-size: 12px;
   }
 
   .room-group-header.is-compact {
-    grid-template-columns: 12px minmax(74px, 1fr) 46px 46px 62px 24px;
+    grid-template-columns: 12px minmax(74px, 1fr) 46px 46px 62px 51px;
     gap: 6px;
     font-size: 12px;
+  }
+}
+
+
+.history-session-filter {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.history-session-selects {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) max-content;
+  min-width: 0;
+  gap: 6px;
+  align-items: center;
+}
+
+.history-session-select {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, var(--vscode-panel-border)));
+  border-radius: 4px;
+}
+
+.history-session-select:focus {
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
+@media (max-width: 460px) {
+  .history-session-selects {
+    grid-template-columns: 1fr;
   }
 }

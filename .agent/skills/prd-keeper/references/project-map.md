@@ -17,6 +17,7 @@
 - `docs/prd/`：PRD 总入口、产品概览、架构、模块索引、模块文档和独立 PRD 日志。
 - `AGENTS.md`、`CODEX.md`、`CLAUDE.md`：AI 入口文件。
 - `src/`：VSCode 扩展源码。
+- `src/danmakuClient.ts`、`src/danmakuProtocol.ts`、`src/danmakuStatusBar.ts`、`src/danmakuWebviewProvider.ts`、`src/wbiSigner.ts`：实时弹幕机的会话、协议、底部状态栏、View 和签名适配。
 - `media/`：VSCode Activity Bar 图标和 Webview 静态资源。
 - `package.json`：扩展贡献点、配置项和 npm 脚本。
 
