@@ -11,6 +11,7 @@ AI 在进行非平凡代码变更前必须先使用 `$prd-keeper`，阅读本文
 - 让用户在编码时无需切换浏览器即可监控多个 B站直播间状态。
 - 支持通过 VSCode 设置和侧边栏交互维护直播间房间号列表。
 - 以不低于 15 秒的刷新间隔自动更新直播间状态，同时保留手动刷新入口。
+- 允许用户主动把全部长期历史导出到仓库，并通过公开 GitHub Pages 在浏览器查看历史走势。
 - 本地长期保存在线人数采样，侧边栏只加载近期绘图窗口用于查看每个主播的迷你走势图和总览走势。
 - 在配置允许时，仅对直播间从未开播变为直播中这一状态变化触发一次开播提醒。
 - 允许用户在独立弹幕机 View 中选择或输入一个直播间，按需连接并分别查看最近 500 条实时文本弹幕和最近 100 条实时 Super Chat，同时在 VSCode 底部状态栏显示最新一条普通弹幕内容。
@@ -25,7 +26,7 @@ AI 在进行非平凡代码变更前必须先使用 `$prd-keeper`，阅读本文
 
 - 应用入口：VSCode 扩展激活事件 `onView:bwatch.liveMonitor`。
 - UI 入口：Activity Bar 容器 `bwatch` 下的直播监控 Webview View `bwatch.liveMonitor` 和实时弹幕 Webview View `bwatch.danmaku`。
-- 命令入口：`bwatch.refresh`、`bwatch.addRoom`、`bwatch.removeRoom`、`bwatch.openRoom`、`bwatch.diagnoseNetwork`、`bwatch.toggleDanmakuStatusBar`。
+- 命令入口：`bwatch.refresh`、`bwatch.addRoom`、`bwatch.removeRoom`、`bwatch.openRoom`、`bwatch.diagnoseNetwork`、`bwatch.toggleDanmakuStatusBar`、`bwatch.exportHistorySiteData`。
 - 配置入口：VSCode 设置 `bwatch.rooms`、`bwatch.groups`、`bwatch.autoRefresh.enabled`、`bwatch.autoRefresh.intervalSeconds`、`bwatch.dataRefresh.baseInfoIntervalSeconds`、`bwatch.dataRefresh.onlineIntervalSeconds`、`bwatch.dataRefresh.fansIntervalSeconds`、`bwatch.dataRefresh.guardIntervalSeconds`、`bwatch.notifications.liveStart.enabled`、`bwatch.network.proxy.mode`、`bwatch.network.proxy.url`。
 - API 入口：扩展内部通过 B站直播房间批量信息接口拉取直播间状态；实时弹幕机通过房间信息、WBI 导航、`getDanmuInfo` 和 B站直播 WebSocket 弹幕服务器获取消息。
 
@@ -34,6 +35,7 @@ AI 在进行非平凡代码变更前必须先使用 `$prd-keeper`，阅读本文
 - [模块索引](modules/README.md)
 - [直播监控扩展](modules/live-monitor.md)
 - [实时弹幕机](modules/danmaku-viewer.md)
+- [远程历史走势页面](modules/history-site.md)
 - [PRD Keeper 治理](modules/prd-keeper.md)
 
 ## 架构文档
@@ -45,6 +47,8 @@ AI 在进行非平凡代码变更前必须先使用 `$prd-keeper`，阅读本文
 - [产品概览](product-overview.md)
 
 ## 最近 PRD 日志
+
+- [20260823-dumpling](prd_log/20260823-dumpling.md)
 
 - [20260822-dumpling](prd_log/20260822-dumpling.md)
 - [20260820-dumpling](prd_log/20260820-dumpling.md)

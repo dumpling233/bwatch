@@ -1,5 +1,8 @@
 .agent/**
+.github/**
 .serena/**
+site/**
+scripts/**
 .vscode/**
 .temp/**
 docs/**

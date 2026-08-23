@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>BWatch 历史走势</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div class="brand-copy">
+      <h1>BWatch 历史走势</h1>
+      <p id="exportStatus">正在读取导出数据...</p>
+    </div>
+    <div class="snapshot-badge" title="页面展示的是插件导出时的数据快照">
+      <span class="status-dot"></span>导出快照
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="control-band" aria-label="历史范围控制">
+      <div class="control-grid">
+        <label class="field">
+          <span>起始日期</span>
+          <select id="dateSelect"></select>
+        </label>
+        <label class="toggle-field" title="同时载入起始日期的下一个自然日">
+          <input id="twoDayToggle" type="checkbox">
+          <span class="toggle-ui" aria-hidden="true"></span>
+          <span>包含次日</span>
+        </label>
+        <label class="field">
+          <span>主播</span>
+          <select id="roomSelect"><option value="">全部主播</option></select>
+        </label>
+        <label class="field">
+          <span>直播场次</span>
+          <select id="sessionSelect" disabled><option value="">全部场次</option></select>
+        </label>
+        <label class="field height-field">
+          <span>图表高度</span>
+          <select id="heightSelect">
+            <option value="360">紧凑</option>
+            <option value="480" selected>标准</option>
+            <option value="620">宽阔</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="range-panel">
+        <div class="range-heading">
+          <span>时间范围</span>
+          <output id="rangeLabel">00:00 - 23:59</output>
+        </div>
+        <div class="dual-range" id="dualRange">
+          <div class="range-track"></div>
+          <div class="range-fill" id="rangeFill"></div>
+          <input id="rangeStart" type="range" min="0" max="1439" value="0" aria-label="开始时间">
+          <input id="rangeEnd" type="range" min="0" max="1439" value="1439" aria-label="结束时间">
+        </div>
+      </div>
+
+      <div class="scope-row">
+        <span class="scope-label">筛选与合计</span>
+        <div id="scopeFilters" class="scope-filters" role="group" aria-label="合计曲线范围"></div>
+      </div>
+    </section>
+
+    <section id="notice" class="notice" hidden></section>
+
+    <section class="chart-layout">
+      <div class="chart-main">
+        <div class="chart-titlebar">
+          <div>
+            <h2>在线人数</h2>
+            <p id="chartSummary">等待数据</p>
+          </div>
+          <div class="chart-actions">
+            <button id="hideAll" class="icon-button" type="button" title="隐藏全部曲线" aria-label="隐藏全部曲线">
+              <span aria-hidden="true">◌</span>
+            </button>
+            <button id="showAll" class="icon-button" type="button" title="显示全部曲线" aria-label="显示全部曲线">
+              <span aria-hidden="true">●</span>
+            </button>
+          </div>
+        </div>
+        <div id="chartFrame" class="chart-frame" style="--chart-height: 480px">
+          <svg id="chart" role="img" aria-label="BWatch 历史在线人数走势图"></svg>
+          <div id="tooltip" class="tooltip" hidden></div>
+          <div id="chartEmpty" class="chart-empty">暂无可显示的数据</div>
+        </div>
+      </div>
+
+      <aside class="legend-panel" aria-label="图例">
+        <div class="legend-title">
+          <h2>曲线</h2>
+          <span id="legendCount">0</span>
+        </div>
+        <div id="legend" class="legend-list"></div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

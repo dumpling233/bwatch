@@ -18,13 +18,13 @@
 - `AGENTS.md`、`CODEX.md`、`CLAUDE.md`：AI 入口文件。
 - `src/`：VSCode 扩展源码。
 - `src/danmakuClient.ts`、`src/danmakuProtocol.ts`、`src/danmakuStatusBar.ts`、`src/danmakuWebviewProvider.ts`、`src/wbiSigner.ts`：实时弹幕机的会话、协议、底部状态栏、View 和签名适配。
+- `src/historySiteExport.ts`、`site/`、`scripts/validate-history-site.mjs`、`.github/workflows/pages.yml`：远程历史数据导出、静态工作台、数据校验和 GitHub Pages 发布。
 - `media/`：VSCode Activity Bar 图标和 Webview 静态资源。
 - `package.json`：扩展贡献点、配置项和 npm 脚本。
 
 ## 待确认结构
 
-- 部署方式：待确认。
-- 发布渠道：待确认。
+- VSCode 扩展发布渠道：待确认。
 
 ## 当前 PRD 文件
 
@@ -33,5 +33,6 @@
 - `docs/prd/architecture.md`
 - `docs/prd/modules/README.md`
 - `docs/prd/modules/live-monitor.md`
+- `docs/prd/modules/history-site.md`
 - `docs/prd/modules/prd-keeper.md`
 - `docs/prd/prd_log/`

@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "dumpling",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dumpling233/bwatch.git"
+  },
   "engines": {
     "vscode": "^1.93.0"
   },
@@ -65,6 +69,11 @@
         "command": "bwatch.diagnoseNetwork",
         "title": "BWatch: Diagnose Network",
         "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "bwatch.exportHistorySiteData",
+        "title": "BWatch: 导出历史网页数据",
+        "icon": "$(cloud-upload)"
       },
       {
         "command": "bwatch.toggleDanmakuStatusBar",
@@ -177,6 +186,7 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
+    "validate:history-site": "node scripts/validate-history-site.mjs site",
     "test": "npm run compile && node --test out/test/**/*.test.js",
     "probe:danmaku": "npm run compile && node out/test/danmakuLiveProbe.js",
     "vscode:prepublish": "npm run compile"

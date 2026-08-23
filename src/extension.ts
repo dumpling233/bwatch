@@ -14,6 +14,7 @@ import {
   renameRoomGroup,
   reorderRoomGroups
 } from './config';
+import { exportHistorySiteData, isBwatchRepositoryRoot } from './historySiteExport';
 import { LiveMonitor } from './liveMonitor';
 import { createProxyFetch, FetchLike, ResolvedProxy, resolveProxy } from './network';
 import { runNetworkDiagnostics, writeNetworkDiagnosticReport } from './networkDiagnostics';
@@ -23,6 +24,7 @@ import { LiveMonitorWebviewProvider } from './webviewProvider';
 import { RoomGroup, RoomSearchResult } from './types';
 
 const CONFIG_SECTION = 'bwatch';
+const HISTORY_SITE_EXPORT_ROOT_KEY = 'bwatch.historySiteExportRoot.v1';
 const DANMAKU_STATUS_BAR_ENABLED_KEY = 'bwatch.danmakuStatusBar.enabled';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -107,6 +109,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bwatch.addRoom', () => showAddRoomInput(client)),
     vscode.commands.registerCommand('bwatch.removeRoom', removeRoom),
     vscode.commands.registerCommand('bwatch.openRoom', openRoom),
+    vscode.commands.registerCommand('bwatch.exportHistorySiteData', () =>
+      exportHistoryForSite(context, historyStore, monitor)),
     vscode.commands.registerCommand('bwatch.diagnoseNetwork', () => diagnoseNetwork(networkContext, output)),
     vscode.commands.registerCommand('bwatch.toggleDanmakuStatusBar', async () => {
       const enabled = !danmakuStatusBar.isEnabled();
@@ -174,6 +178,72 @@ async function diagnoseNetwork(
     void vscode.window.showWarningMessage(`BWatch：网络诊断完成，${failedCount} 个接口异常，详情见 BWatch 输出面板`);
   }
 }
+async function exportHistoryForSite(
+  context: vscode.ExtensionContext,
+  historyStore: OnlineHistoryStore,
+  monitor: LiveMonitor
+): Promise<void> {
+  const rootPath = await resolveHistorySiteExportRoot(context);
+  if (!rootPath) {
+    return;
+  }
+
+  try {
+    const report = exportHistorySiteData(rootPath, historyStore, monitor.getSnapshot());
+    const action = await vscode.window.showInformationMessage(
+      `BWatch：已导出 ${report.roomCount} 个主播、${report.dateCount} 天、${report.pointCount.toLocaleString()} 个采样点（${formatByteSize(report.byteCount)}，${report.changedFileCount} 个文件有变化）`,
+      '更换目录'
+    );
+    if (action === '更换目录') {
+      await context.globalState.update(HISTORY_SITE_EXPORT_ROOT_KEY, undefined);
+      await exportHistoryForSite(context, historyStore, monitor);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '未知导出错误';
+    void vscode.window.showErrorMessage(`BWatch：历史网页数据导出失败：${message}`);
+  }
+}
+
+async function resolveHistorySiteExportRoot(context: vscode.ExtensionContext): Promise<string | null> {
+  const storedRoot = context.globalState.get<string>(HISTORY_SITE_EXPORT_ROOT_KEY, '');
+  if (isBwatchRepositoryRoot(storedRoot)) {
+    return storedRoot;
+  }
+
+  const workspaceRoot = vscode.workspace.workspaceFolders?.find((folder) =>
+    isBwatchRepositoryRoot(folder.uri.fsPath)
+  );
+  const selected = await vscode.window.showOpenDialog({
+    title: '选择 bwatch 仓库根目录',
+    openLabel: '选择仓库',
+    defaultUri: workspaceRoot?.uri,
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false
+  });
+  const rootPath = selected?.[0]?.fsPath;
+  if (!rootPath) {
+    return null;
+  }
+  if (!isBwatchRepositoryRoot(rootPath)) {
+    void vscode.window.showErrorMessage('BWatch：所选目录不是包含 site/index.html 的 bwatch 仓库根目录');
+    return null;
+  }
+
+  await context.globalState.update(HISTORY_SITE_EXPORT_ROOT_KEY, rootPath);
+  return rootPath;
+}
+
+function formatByteSize(byteCount: number): string {
+  if (byteCount < 1024) {
+    return `${byteCount} B`;
+  }
+  if (byteCount < 1024 * 1024) {
+    return `${(byteCount / 1024).toFixed(1)} KB`;
+  }
+  return `${(byteCount / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 
 async function showAddRoomInput(client: BilibiliLiveClient): Promise<void> {
   const input = await vscode.window.showInputBox({

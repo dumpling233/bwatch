@@ -8,6 +8,7 @@ BWatch is a VSCode extension that monitors multiple Bilibili live rooms in the s
 - Show live status, online viewer count, live duration, title, anchor name, and last refresh time.
 - Show anchor fans count, guard fleet total, and compact refresh status for each room.
 - Query one or two adjacent local history dates with a continuous 24/48-hour trend axis and a midnight boundary marker.
+- Export all local history to a versioned static dataset and inspect it through a GitHub Pages history workspace.
 - Use an extended high-contrast palette so room and aggregate trend lines remain distinguishable.
 - Keep the sidebar controls collapsed by default so the room list stays as the primary panel.
 - Preserve sidebar display, sort, filter, trend, and control-panel selections while switching VSCode panels.
@@ -44,6 +45,34 @@ BWatch is a VSCode extension that monitors multiple Bilibili live rooms in the s
 历史走势控制面板顶部提供“主播 / 直播场次”二级级联下拉框。第一级选择主播，第二级使用本地长期在线人数文件识别并列出直播场次：在线人数大于 0 的连续区间视为一场，0 结束场次，null 表示采集失败或断线，不强制切断当前场次。
 
 场次下拉项按最近结束时间倒序显示日期、起止时间、00:00:00 时长和峰值在线人数。选择场次会将历史走势图定位到场次前后各 5 分钟；跨午夜时自动使用相邻双日范围，用户仍可继续手动调整日期、时间、图例和合计曲线。清除主播筛选后恢复普通历史查询范围；总览和历史图例顶部均提供“隐藏全部”和“全部显示”操作。
+
+## 远程历史走势页面
+
+在 VSCode 命令面板运行 `BWatch: 导出历史网页数据`。首次运行选择当前 `bwatch` 仓库根目录，后续会直接复用本机路径；如果目录失效，命令会要求重新选择。
+
+导出会把全部长期历史写入 `site/data/v1/`，包括已移出监控列表但仍有历史的房间。原始毫秒时间戳、15 秒采样和 `null` 断线语义均保留。命令只写静态数据，不会执行 `git add`、`commit` 或 `push`。
+
+日常更新流程：
+
+```text
+插件采集本地历史
+    ↓
+运行“导出历史网页数据”
+    ↓
+检查 site/data 变更
+    ↓
+手动 git add / commit / push
+    ↓
+GitHub Actions 自动更新 Pages
+```
+
+首次启用时，在 GitHub 仓库的 `Settings > Pages > Build and deployment > Source` 选择 `GitHub Actions`。默认分支推送并且 `Deploy history site to Pages` 工作流成功后，可访问 [BWatch 历史走势](https://dumpling233.github.io/bwatch/)。页面和导出数据是公开的，房间号、主播名、分组、采样时间和在线人数都可被下载。
+
+本地发布前可运行：
+
+```bash
+node scripts/validate-history-site.mjs site
+```
 
 ## Notes
 

@@ -2,15 +2,16 @@
 
 ## 系统结构
 
-- 前端/UI：VSCode `WebviewViewProvider` 在 Activity Bar 提供直播监控和实时弹幕两个独立侧边栏 View，静态资源位于 `media/`；Webview View 注册时启用 `retainContextWhenHidden`，前端通过 VSCode Webview `getState` / `setState` 保存纯 UI 控制状态。
+- 前端/UI：VSCode `WebviewViewProvider` 在 Activity Bar 提供直播监控和实时弹幕两个独立侧边栏 View，静态资源位于 `media/`；`site/` 提供无构建依赖的浏览器历史走势工作台。Webview 使用 `getState` / `setState`，静态页面使用 `localStorage` 保存纯 UI 控制状态。
 - 扩展宿主：TypeScript VSCode 扩展，入口为 `src/extension.ts`，编译输出到 `out/`。
-- 数据层：不使用数据库；监控房间号、自定义分组和刷新/提醒配置存储在 VSCode 用户设置中，在线人数历史按房间长期保存到 VSCode 扩展本地存储目录。
+- 数据层：不使用数据库；监控房间号、自定义分组和刷新/提醒配置存储在 VSCode 用户设置中，在线人数历史按房间长期保存到 VSCode 扩展本地存储目录；用户主动导出后，公开静态副本写入 `site/data/v1/`。
 - 外部服务：通过 B站直播房间基础信息接口 `xlive/web-room/v1/index/getRoomBaseInfo` 获取房间标题、主播名、开播状态、人气和开播时间；通过 `x/relation/stat?vmid={uid}` 获取主播粉丝数；直播中房间再通过 `xlive/general-interface/v1/rank/getOnlineGoldRank` 获取直播页同款在线观众人数；主播名模糊搜索通过 `x/web-interface/search/type?search_type=live_user` 获取候选直播间；实时弹幕机通过 `room/v1/Room/get_info`、`x/web-interface/nav` 和带 WBI 签名的 `xlive/web-room/v1/index/getDanmuInfo` 获取真实房间号、签名密钥、token 和 WebSocket 服务器，再连接 B站直播弹幕服务器。HTTP 请求经过统一网络适配层，WebSocket 按相同代理配置尝试 HTTP/HTTPS 代理候选。
-- 部署方式：作为 VSCode 扩展运行，发布渠道待确认。
+- 部署方式：核心产品作为 VSCode 扩展运行；`site/` 由默认分支 push 或手动工作流通过官方 GitHub Pages Actions 发布。
 
 ## 主要目录到产品模块的映射
 
 - `src/extension.ts`：扩展激活、命令注册、配置监听、分组配置更新、VSCode 原生输入/候选列表、通知、外部打开和搜索候选已监控状态标记。
+- `src/historySiteExport.ts`：版本化历史导出契约、按日原始采样、场次摘要、稳定排序、差异写入和原子更新。
 - `src/webviewProvider.ts`：侧边栏 Webview View 的 HTML、主播总览标题栏图标操作消息桥接和状态推送。刷新、搜索添加按钮保留原有 DOM 标识，仅调整所属标题栏。
 - `src/liveMonitor.ts`：直播间轮询、快照管理、开播提醒状态机。
 - `src/onlineHistoryStore.ts`：在线人数历史采样、本地长期文件持久化、最近已知主播名元数据保存、旧 `globalState` 历史迁移、近期快照裁剪、历史日期列表和按日期时间段查询。
@@ -27,6 +28,9 @@
 - `src/test/`：核心逻辑单元测试。
 - `media/`：扩展图标、Webview 样式和前端脚本。
 - `media/danmaku.js`、`media/danmaku.css`：弹幕连接控制、状态栏、当前房间监控指标、普通弹幕/SC 标签与内存列表、清屏和自动滚动界面。
+- `site/`：公开静态历史走势工作台、`.nojekyll` 和版本化导出数据。
+- `scripts/validate-history-site.mjs`：Pages 发布前的数据结构、排序、索引和时间边界校验。
+- `.github/workflows/pages.yml`：默认分支判定、站点校验和 GitHub Pages 发布。
 - `docs/prd/`：PRD 总入口、产品概览、架构、模块文档和独立 PRD 日志。
 
 ## 关键数据流
@@ -63,6 +67,15 @@
 - `HistoryQueryResult` 保留首日 `date` 兼容字段，同时返回 `dates`、`startMs`、`endMs` 和双日时的第二天 00:00 `boundaryMs`；Webview 使用同一时间轴绘制，不在前端拼接两个独立图表。
 - 单日横轴和范围标签带日期；双日横轴与悬浮提示使用 `MM/DD HH:mm`，在 `boundaryMs` 处显示第二天 00:00 的虚线分界。
 - 总览和历史图共用稳定颜色分配器：房间按监控列表索引取色，合计序列从房间数量之后取色；预设调色板耗尽后使用确定性 HSL 颜色，不循环复用已有颜色。
+
+## 静态历史导出与 Pages 数据流
+
+1. 用户运行 `bwatch.exportHistorySiteData`；扩展从本机 `globalState` 读取上次仓库路径，首次或路径失效时通过目录选择器获取仓库根目录。
+2. `historySiteExport.ts` 使用 `OnlineHistoryStore.getAvailableDates()`、`queryDateHistory()` 和 `getRoomSessions()` 读取全部长期历史，不改变本地文件格式或查询行为。
+3. 导出器把毫秒时间戳转为相对当天起点偏移，按自然日写入 `dates/`，按房间写入 `sessions/`，最后写入 Manifest；内容相同不重写，所有更新先写 `.tmp` 再 rename。
+4. 用户手动提交并推送；Pages 工作流先运行 `scripts/validate-history-site.mjs`，再上传整个 `site/` 并部署。工作流通过仓库默认分支元数据判断是否发布。
+5. 浏览器以 `cache: no-store` 读取 Manifest，以 `generatedAt` 查询参数读取日期和场次文件；所有自然日标签使用导出时区，避免浏览器本地时区改变边界。
+6. 静态页面只读公开数据。命令不导出 Cookie、Token、代理配置或其他 VSCode 状态，也不执行 Git 命令。
 
 ## 刷新数据获取策略
 
