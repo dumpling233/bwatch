@@ -15,6 +15,9 @@
       <h1>BWatch 历史走势</h1>
       <p id="exportStatus">正在读取导出数据...</p>
     </div>
+    <button id="themeToggle" class="theme-toggle" type="button" title="切换至夜间模式" aria-label="切换至夜间模式">
+      <span aria-hidden="true">☾</span>
+    </button>
     <div class="snapshot-badge" title="页面展示的是插件导出时的数据快照">
       <span class="status-dot"></span>导出快照
     </div>
@@ -22,37 +25,31 @@
 
   <main class="workspace">
     <section class="control-band" aria-label="历史范围控制">
-      <div class="control-grid">
-        <label class="field">
-          <span>起始日期</span>
-          <select id="dateSelect"></select>
-        </label>
-        <label class="toggle-field" title="同时载入起始日期的下一个自然日">
-          <input id="twoDayToggle" type="checkbox">
-          <span class="toggle-ui" aria-hidden="true"></span>
-          <span>包含次日</span>
-        </label>
-        <label class="field">
-          <span>主播</span>
-          <select id="roomSelect"><option value="">全部主播</option></select>
-        </label>
-        <label class="field">
-          <span>直播场次</span>
-          <select id="sessionSelect" disabled><option value="">全部场次</option></select>
-        </label>
-        <label class="field height-field">
-          <span>图表高度</span>
-          <select id="heightSelect">
-            <option value="360">紧凑</option>
-            <option value="480" selected>标准</option>
-            <option value="620">宽阔</option>
-          </select>
-        </label>
+      <div class="control-field">
+        <span class="field-heading">主播 / 直播场次</span>
+        <div class="session-controls">
+          <select id="roomSelect" aria-label="选择主播"><option value="">选择主播</option></select>
+          <select id="sessionSelect" aria-label="选择直播场次" disabled><option value="">先选择主播</option></select>
+          <button id="clearSession" class="command-button" type="button" hidden>清除</button>
+        </div>
       </div>
 
-      <div class="range-panel">
+      <div class="control-field scope-field">
+        <span class="field-heading">筛选范围</span>
+        <div id="scopeFilters" class="scope-filters" role="group" aria-label="筛选范围与合计曲线"></div>
+      </div>
+
+      <div class="control-field date-field">
+        <span class="field-heading">历史日期</span>
+        <div class="date-controls">
+          <input id="dateInput" type="date" aria-label="历史日期">
+          <div id="dateButtons" class="date-buttons" role="group" aria-label="可用历史日期"></div>
+        </div>
+      </div>
+
+      <div class="control-field range-panel">
         <div class="range-heading">
-          <span>时间范围</span>
+          <span class="field-heading">时间范围</span>
           <output id="rangeLabel">00:00 - 23:59</output>
         </div>
         <div class="dual-range" id="dualRange">
@@ -63,28 +60,22 @@
         </div>
       </div>
 
-      <div class="scope-row">
-        <span class="scope-label">筛选与合计</span>
-        <div id="scopeFilters" class="scope-filters" role="group" aria-label="合计曲线范围"></div>
-      </div>
+      <label class="control-field height-field">
+        <span class="range-heading">
+          <span class="field-heading">图表高度</span>
+          <output id="heightLabel">480 px</output>
+        </span>
+        <input id="heightRange" type="range" min="160" max="640" step="20" value="480">
+      </label>
     </section>
 
     <section id="notice" class="notice" hidden></section>
 
-    <section class="chart-layout">
-      <div class="chart-main">
+    <section class="chart-main">
         <div class="chart-titlebar">
           <div>
             <h2>在线人数</h2>
             <p id="chartSummary">等待数据</p>
-          </div>
-          <div class="chart-actions">
-            <button id="hideAll" class="icon-button" type="button" title="隐藏全部曲线" aria-label="隐藏全部曲线">
-              <span aria-hidden="true">◌</span>
-            </button>
-            <button id="showAll" class="icon-button" type="button" title="显示全部曲线" aria-label="显示全部曲线">
-              <span aria-hidden="true">●</span>
-            </button>
           </div>
         </div>
         <div id="chartFrame" class="chart-frame" style="--chart-height: 480px">
@@ -92,15 +83,14 @@
           <div id="tooltip" class="tooltip" hidden></div>
           <div id="chartEmpty" class="chart-empty">暂无可显示的数据</div>
         </div>
-      </div>
-
-      <aside class="legend-panel" aria-label="图例">
-        <div class="legend-title">
-          <h2>曲线</h2>
-          <span id="legendCount">0</span>
+        <div class="legend-panel" aria-label="图例">
+          <div class="legend-actions">
+            <button id="hideAll" type="button">隐藏全部</button>
+            <button id="showAll" type="button">全部显示</button>
+            <span id="legendCount">0 条曲线</span>
+          </div>
+          <div id="legend" class="legend-list"></div>
         </div>
-        <div id="legend" class="legend-list"></div>
-      </aside>
     </section>
   </main>
 

@@ -4,13 +4,14 @@
   const SCHEMA_VERSION = 1;
   const STORAGE_KEY = 'bwatch.historySite.state.v1';
   const PALETTE = [
-    '#1677b8', '#c84b56', '#23866f', '#a26213', '#7857a6', '#2f7f9a', '#be5d23', '#5267b0',
-    '#738524', '#a84f8c', '#007c91', '#ad7138', '#475d75', '#d0486f', '#16837a', '#8563bb',
-    '#567b2d', '#a0443f', '#3270a8', '#99631b', '#5e55a2', '#147e58', '#b45581', '#446f7a'
+    '#3B82F6', '#22C55E', '#EAB308', '#EF4444', '#A855F7', '#F97316',
+    '#06B6D4', '#EC4899', '#84CC16', '#14B8A6', '#8B5CF6', '#F43F5E',
+    '#0EA5E9', '#D946EF', '#E879F9', '#10B981', '#F59E0B', '#6366F1',
+    '#FB7185', '#2DD4BF', '#A3E635', '#38BDF8', '#C084FC', '#FB923C'
   ];
 
   const refs = Object.fromEntries([
-    'exportStatus', 'dateSelect', 'twoDayToggle', 'roomSelect', 'sessionSelect', 'heightSelect',
+    'exportStatus', 'themeToggle', 'dateInput', 'dateButtons', 'roomSelect', 'sessionSelect', 'clearSession', 'heightRange', 'heightLabel',
     'rangeStart', 'rangeEnd', 'rangeFill', 'rangeLabel', 'scopeFilters', 'notice', 'chartSummary',
     'chartFrame', 'chart', 'tooltip', 'chartEmpty', 'legend', 'legendCount', 'hideAll', 'showAll'
   ].map((id) => [id, document.getElementById(id)]));
@@ -24,8 +25,10 @@
     endMinute: 1439,
     roomId: '',
     sessionId: '',
-    scopes: new Set(['all']),
+    filters: new Set(['all']),
+    aggregates: new Set(),
     hidden: new Set(),
+    theme: 'system',
     height: 480,
     series: [],
     loadingToken: 0
@@ -36,6 +39,7 @@
   async function init() {
     bindEvents();
     restoreState();
+    applyTheme();
     setLoading(true);
     try {
       const response = await fetch('./data/v1/manifest.json', { cache: 'no-store' });
@@ -47,7 +51,6 @@
       state.manifest = manifest;
       populateControls();
       renderExportStatus();
-      renderScopeFilters();
       if (manifest.dates.length === 0) {
         showNotice('当前还没有导出的历史数据。', false);
         setLoading(false);
@@ -64,17 +67,25 @@
   }
 
   function bindEvents() {
-    refs.dateSelect.addEventListener('change', async () => {
-      state.selectedDate = refs.dateSelect.value;
-      state.sessionId = '';
-      resetRange();
-      updateTwoDayAvailability();
-      await loadSelectedDates();
+    refs.themeToggle.addEventListener('click', () => {
+      state.theme = getEffectiveTheme() === 'dark' ? 'light' : 'dark';
+      applyTheme();
+      persistState();
     });
-    refs.twoDayToggle.addEventListener('change', async () => {
-      state.twoDays = refs.twoDayToggle.checked;
+    window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+      if (state.theme === 'system') applyTheme();
+    });
+    refs.dateInput.addEventListener('change', async () => {
+      if (!state.manifest?.dates.some((item) => item.date === refs.dateInput.value)) {
+        refs.dateInput.value = state.selectedDate;
+        return;
+      }
+      state.selectedDate = refs.dateInput.value;
+      state.twoDays = false;
       state.sessionId = '';
+      refs.sessionSelect.value = '';
       resetRange();
+      renderDateButtons();
       await loadSelectedDates();
     });
     refs.roomSelect.addEventListener('change', async () => {
@@ -85,15 +96,17 @@
       render();
     });
     refs.sessionSelect.addEventListener('change', () => {
-      state.sessionId = refs.sessionSelect.value;
       locateSession();
     });
-    refs.heightSelect.addEventListener('change', () => {
-      state.height = Number(refs.heightSelect.value) || 480;
+    refs.clearSession.addEventListener('click', clearSessionFilter);
+    refs.heightRange.addEventListener('input', () => {
+      state.height = clamp(Number(refs.heightRange.value) || 480, 160, 640);
+      refs.heightLabel.textContent = `${state.height} px`;
       refs.chartFrame.style.setProperty('--chart-height', `${state.height}px`);
-      refs.legend.style.setProperty('--chart-height', `${state.height}px`);
+      renderChart();
+    });
+    refs.heightRange.addEventListener('change', () => {
       persistState();
-      render();
     });
     refs.rangeStart.addEventListener('input', () => updateRange('start'));
     refs.rangeEnd.addEventListener('input', () => updateRange('end'));
@@ -132,11 +145,16 @@
     state.selectedDate = availableDates.has(state.selectedDate)
       ? state.selectedDate
       : manifest.dates.at(-1)?.date || '';
+    if (state.twoDays && !availableDates.has(getNextDate(state.selectedDate))) {
+      state.twoDays = false;
+      state.endMinute = Math.min(state.endMinute, 1439);
+    }
 
-    refs.dateSelect.replaceChildren(...manifest.dates.map((item) => option(item.date, item.date)));
-    refs.dateSelect.value = state.selectedDate;
+    refs.dateInput.value = state.selectedDate;
+    refs.dateInput.min = manifest.dates[0]?.date || '';
+    refs.dateInput.max = manifest.dates.at(-1)?.date || '';
     refs.roomSelect.replaceChildren(
-      option('', '全部主播'),
+      option('', '选择主播'),
       ...manifest.rooms.map((room) => option(room.roomId, `${room.anchorName} · ${room.roomId}${room.monitored ? '' : '（历史）'}`))
     );
     if (manifest.rooms.some((room) => room.roomId === state.roomId)) {
@@ -144,10 +162,30 @@
     } else {
       state.roomId = '';
     }
-    refs.heightSelect.value = String(state.height);
+    refs.heightRange.value = String(state.height);
+    refs.heightLabel.textContent = `${state.height} px`;
     refs.chartFrame.style.setProperty('--chart-height', `${state.height}px`);
-    refs.legend.style.setProperty('--chart-height', `${state.height}px`);
-    updateTwoDayAvailability();
+    renderDateButtons();
+  }
+
+  function getEffectiveTheme() {
+    if (state.theme === 'light' || state.theme === 'dark') return state.theme;
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  function applyTheme() {
+    const explicitTheme = state.theme === 'light' || state.theme === 'dark' ? state.theme : '';
+    if (explicitTheme) {
+      document.documentElement.dataset.theme = explicitTheme;
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+    const effectiveTheme = getEffectiveTheme();
+    const icon = refs.themeToggle.querySelector('[aria-hidden="true"]');
+    if (icon) icon.textContent = effectiveTheme === 'dark' ? '☀' : '☾';
+    const label = effectiveTheme === 'dark' ? '切换至日间模式' : '切换至夜间模式';
+    refs.themeToggle.title = label;
+    refs.themeToggle.setAttribute('aria-label', label);
   }
 
   function renderExportStatus() {
@@ -159,46 +197,111 @@
     refs.exportStatus.textContent = `最后导出 ${formatDateTime(manifest.generatedAt, true)} · ${manifest.timeZone}`;
   }
 
-  function renderScopeFilters() {
-    const scopes = [
+  function getAvailableScopes() {
+    return [
       { id: 'all', label: '全部' },
       { id: 'withData', label: '有数据' },
       ...state.manifest.groups.map((group) => ({ id: `group:${group.id}`, label: group.name }))
     ];
+  }
+
+  function renderScopeFilters(roomSeries = []) {
+    const scopes = getAvailableScopes();
     const validIds = new Set(scopes.map((scope) => scope.id));
-    state.scopes = new Set(Array.from(state.scopes).filter((scope) => validIds.has(scope)));
-    if (state.scopes.size === 0) {
-      state.scopes.add('all');
-    }
+    state.filters = new Set(Array.from(state.filters).filter((scope) => validIds.has(scope)));
+    state.aggregates = new Set(Array.from(state.aggregates).filter((scope) => validIds.has(scope)));
+    const dataRoomIds = new Set(roomSeries.map((series) => series.roomId));
+    const positiveRoomIds = new Set(roomSeries
+      .filter((series) => series.points.some((point) => isFiniteNumber(point[1]) && point[1] > 0))
+      .map((series) => series.roomId));
     refs.scopeFilters.replaceChildren(...scopes.map((scope) => {
+      const control = document.createElement('div');
+      control.className = 'scope-control';
+      const roomIds = getScopeRoomIds(scope.id, dataRoomIds, positiveRoomIds);
+      const liveCount = Array.from(roomIds).filter((roomId) =>
+        state.manifest.rooms.find((room) => room.roomId === roomId)?.latestStatus === 'live'
+      ).length;
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'scope-button';
-      button.textContent = scope.label;
+      button.textContent = `${scope.label} ${liveCount}/${roomIds.size}`;
+      button.title = `加入或移出“${scope.label}”范围`;
       button.dataset.scope = scope.id;
-      button.setAttribute('aria-pressed', String(state.scopes.has(scope.id)));
+      button.setAttribute('aria-pressed', String(state.filters.has(scope.id)));
       button.addEventListener('click', () => {
-        if (state.scopes.has(scope.id)) {
-          state.scopes.delete(scope.id);
+        if (state.filters.has(scope.id)) {
+          state.filters.delete(scope.id);
         } else {
-          state.scopes.add(scope.id);
+          state.filters.add(scope.id);
         }
-        button.setAttribute('aria-pressed', String(state.scopes.has(scope.id)));
         persistState();
         render();
       });
+      const aggregateButton = document.createElement('button');
+      aggregateButton.type = 'button';
+      aggregateButton.className = 'aggregate-scope-button';
+      aggregateButton.textContent = 'Σ';
+      aggregateButton.title = `${state.aggregates.has(scope.id) ? '移除' : '添加'}“${scope.label}”在线人数合计曲线`;
+      aggregateButton.setAttribute('aria-label', aggregateButton.title);
+      aggregateButton.setAttribute('aria-pressed', String(state.aggregates.has(scope.id)));
+      aggregateButton.addEventListener('click', () => {
+        if (state.aggregates.has(scope.id)) {
+          state.aggregates.delete(scope.id);
+          state.hidden.delete(`sum:${scope.id}`);
+        } else {
+          state.aggregates.add(scope.id);
+        }
+        persistState();
+        render();
+      });
+      control.append(button, aggregateButton);
+      return control;
+    }));
+  }
+
+  function getSelectedDates() {
+    return state.twoDays ? [state.selectedDate, getNextDate(state.selectedDate)] : [state.selectedDate];
+  }
+
+  function renderDateButtons() {
+    if (!state.manifest) return;
+    const selectedDates = new Set(getSelectedDates());
+    refs.dateInput.value = state.selectedDate;
+    refs.dateButtons.replaceChildren(...state.manifest.dates.map((item) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'date-button';
+      button.textContent = formatHistoryDateLabel(item.date);
+      button.title = `${item.roomIds.length} 个直播间，${formatNumber(item.pointCount)} 个采样点`;
+      button.setAttribute('aria-pressed', String(selectedDates.has(item.date)));
+      button.addEventListener('click', () => selectHistoryDate(item.date));
       return button;
     }));
   }
 
-  function updateTwoDayAvailability() {
-    const nextDate = getNextDate(state.selectedDate);
-    const available = Boolean(nextDate && state.manifest.dates.some((item) => item.date === nextDate));
-    if (!available) {
+  async function selectHistoryDate(date) {
+    const selectedDates = getSelectedDates();
+    state.sessionId = '';
+    refs.sessionSelect.value = '';
+    if (selectedDates.length === 2 && selectedDates.includes(date)) {
+      state.selectedDate = selectedDates.find((item) => item !== date) || date;
       state.twoDays = false;
+      state.endMinute = Math.min(state.endMinute, 1439);
+    } else if (selectedDates.length === 1 && date !== state.selectedDate && areAdjacentDates(state.selectedDate, date)) {
+      state.selectedDate = date < state.selectedDate ? date : state.selectedDate;
+      state.twoDays = true;
+      state.endMinute = 2879;
+    } else if (!selectedDates.includes(date)) {
+      state.selectedDate = date;
+      state.twoDays = false;
+      state.endMinute = Math.min(state.endMinute, 1439);
+    } else {
+      return;
     }
-    refs.twoDayToggle.disabled = !available;
-    refs.twoDayToggle.checked = state.twoDays && available;
+    refs.dateInput.value = state.selectedDate;
+    normalizeRange();
+    renderDateButtons();
+    await loadSelectedDates();
   }
 
   async function loadSelectedDates() {
@@ -208,10 +311,7 @@
     const token = ++state.loadingToken;
     setLoading(true);
     hideNotice();
-    const dates = [state.selectedDate];
-    if (state.twoDays) {
-      dates.push(getNextDate(state.selectedDate));
-    }
+    const dates = getSelectedDates();
     try {
       const metadata = dates.map((date) => state.manifest.dates.find((item) => item.date === date));
       if (metadata.some((item) => !item)) {
@@ -250,9 +350,11 @@
   }
 
   async function populateSessions() {
-    refs.sessionSelect.replaceChildren(option('', '全部场次'));
+    refs.sessionSelect.replaceChildren(option('', state.roomId ? '正在读取直播场次' : '先选择主播'));
     refs.sessionSelect.disabled = !state.roomId;
+    refs.clearSession.hidden = !state.roomId;
     if (!state.roomId) {
+      refs.sessionSelect.dataset.sessions = '[]';
       return;
     }
     const room = state.manifest.rooms.find((item) => item.roomId === state.roomId);
@@ -269,13 +371,13 @@
         throw new Error('场次文件结构不兼容。');
       }
       refs.sessionSelect.replaceChildren(
-        option('', '全部场次'),
-        ...value.sessions.map((session, index) => option(
+        option('', value.sessions.length > 0 ? '选择直播场次' : '暂无可识别的直播场次'),
+        ...value.sessions.map((session) => option(
           sessionKey(session),
-          `${formatDateTime(session.startMs, true)} · 峰值 ${formatNumber(session.peakOnline)}`
+          `${formatDateTime(session.startMs, true)} - ${formatDateTime(session.endMs, true)} · ${formatSessionDuration(session.durationMs)} · 峰值 ${formatNumber(session.peakOnline)}`
         ))
       );
-      refs.sessionSelect.disabled = value.sessions.length === 0;
+      refs.sessionSelect.disabled = false;
       refs.sessionSelect.dataset.sessions = JSON.stringify(value.sessions);
       if (value.sessions.some((session) => sessionKey(session) === state.sessionId)) {
         refs.sessionSelect.value = state.sessionId;
@@ -283,6 +385,7 @@
         state.sessionId = '';
       }
     } catch (error) {
+      refs.sessionSelect.replaceChildren(option('', '场次读取失败'));
       refs.sessionSelect.disabled = true;
       showNotice(error instanceof Error ? error.message : '场次数据加载失败。', true);
     }
@@ -292,6 +395,7 @@
     state.sessionId = refs.sessionSelect.value;
     if (!state.sessionId) {
       persistState();
+      render();
       return;
     }
     const sessions = safeJson(refs.sessionSelect.dataset.sessions, []);
@@ -299,22 +403,51 @@
     if (!session) {
       return;
     }
-    const startDate = findManifestDate(session.startMs);
-    const endDate = findManifestDate(session.endMs);
+    const expandedStartMs = session.startMs - 5 * 60_000;
+    const expandedEndMs = session.endMs + 5 * 60_000;
+    const startDate = findManifestDate(expandedStartMs) || findManifestDate(session.startMs);
+    const endDate = findManifestDate(expandedEndMs) || findManifestDate(session.endMs);
     if (!startDate) {
       showNotice('这个场次所在日期尚未导出。', false);
       return;
     }
     state.selectedDate = startDate.date;
     state.twoDays = Boolean(endDate && endDate.date !== startDate.date && getNextDate(startDate.date) === endDate.date);
-    refs.dateSelect.value = state.selectedDate;
-    updateTwoDayAvailability();
-    refs.twoDayToggle.checked = state.twoDays;
+    refs.dateInput.value = state.selectedDate;
+    renderDateButtons();
     const baseMs = startDate.startMs;
     const maxMinute = state.twoDays ? 2879 : 1439;
-    state.startMinute = clamp(Math.floor((session.startMs - baseMs) / 60_000) - 5, 0, maxMinute);
-    state.endMinute = clamp(Math.ceil((session.endMs - baseMs) / 60_000) + 5, 0, maxMinute);
+    state.startMinute = clamp(Math.floor((expandedStartMs - baseMs) / 60_000), 0, maxMinute);
+    state.endMinute = clamp(Math.ceil((expandedEndMs - baseMs) / 60_000), 0, maxMinute);
+    applySessionControls();
     await loadSelectedDates();
+  }
+
+  function clearSessionFilter() {
+    state.roomId = '';
+    state.sessionId = '';
+    refs.roomSelect.value = '';
+    refs.sessionSelect.replaceChildren(option('', '先选择主播'));
+    refs.sessionSelect.disabled = true;
+    refs.sessionSelect.dataset.sessions = '[]';
+    refs.clearSession.hidden = true;
+    persistState();
+    render();
+  }
+
+  function applySessionControls() {
+    if (!state.roomId || !state.sessionId || !state.manifest) return;
+    state.filters = new Set(['all']);
+    const hidden = new Set();
+    for (const room of state.manifest.rooms) {
+      if (room.roomId !== state.roomId) {
+        hidden.add('room:' + room.roomId);
+      }
+    }
+    for (const scope of getAvailableScopes()) {
+      hidden.add('sum:' + scope.id);
+    }
+    state.hidden = hidden;
   }
 
   function updateRange(source) {
@@ -364,6 +497,7 @@
 
   function render() {
     const allRoomSeries = buildRoomSeries();
+    renderScopeFilters(allRoomSeries);
     const visibleRoomSeries = filterRoomSeries(allRoomSeries);
     const aggregateSeries = buildAggregateSeries(allRoomSeries);
     state.series = [...aggregateSeries, ...visibleRoomSeries];
@@ -394,12 +528,12 @@
       }
     }
     return state.manifest.rooms
-      .map((room) => ({
+      .map((room, index) => ({
         id: `room:${room.roomId}`,
         roomId: room.roomId,
         label: room.anchorName,
         meta: room.monitored ? room.roomId : `${room.roomId} · 历史`,
-        color: colorForRoom(room.roomId),
+        color: colorForRoom(room.roomId, index),
         points: (roomPoints.get(room.roomId) || []).sort((left, right) => left[0] - right[0]),
         aggregate: false
       }))
@@ -407,31 +541,28 @@
   }
 
   function filterRoomSeries(roomSeries) {
-    if (state.roomId) {
-      return roomSeries.filter((series) => series.roomId === state.roomId);
-    }
     const dataRoomIds = new Set(roomSeries.map((series) => series.roomId));
     const positiveRoomIds = new Set(
       roomSeries.filter((series) => series.points.some((point) => isFiniteNumber(point[1]) && point[1] > 0))
         .map((series) => series.roomId)
     );
     const allowedRoomIds = new Set();
-    for (const scope of state.scopes) {
+    for (const scope of state.filters) {
       getScopeRoomIds(scope, dataRoomIds, positiveRoomIds).forEach((roomId) => allowedRoomIds.add(roomId));
     }
     return roomSeries.filter((series) => allowedRoomIds.has(series.roomId));
   }
 
   function buildAggregateSeries(roomSeries) {
-    if (state.scopes.size === 0) {
+    if (state.aggregates.size === 0) {
       return [];
     }
     const dataRoomIds = new Set(roomSeries.map((series) => series.roomId));
-    return Array.from(state.scopes).map((scope, index) => {
     const positiveRoomIds = new Set(
       roomSeries.filter((series) => series.points.some((point) => isFiniteNumber(point[1]) && point[1] > 0))
         .map((series) => series.roomId)
     );
+    return Array.from(state.aggregates).map((scope) => {
       const roomIds = getScopeRoomIds(scope, dataRoomIds, positiveRoomIds);
       const members = roomSeries.filter((series) => roomIds.has(series.roomId));
       if (members.length === 0) {
@@ -441,7 +572,7 @@
         id: `sum:${scope}`,
         label: `Σ ${getScopeLabel(scope)}`,
         meta: `${members.length} 位`,
-        color: PALETTE[(state.manifest.rooms.length + index + 3) % PALETTE.length],
+        color: colorForTrend(state.manifest.rooms.length + getScopeColorIndex(scope)),
         points: sumSeriesPoints(members),
         aggregate: true
       };
@@ -460,6 +591,13 @@
       return new Set((group?.rooms || []).filter((roomId) => dataRoomIds.has(roomId)));
     }
     return new Set();
+  }
+
+  function getScopeColorIndex(scope) {
+    if (scope === 'all') return 0;
+    if (scope === 'withData') return 2;
+    const groupIndex = state.manifest.groups.findIndex((group) => group.id === scope.slice(6));
+    return groupIndex >= 0 ? groupIndex + 3 : 0;
   }
 
   function getScopeLabel(scope) {
@@ -482,9 +620,25 @@
     });
   }
 
+  function findLatestValidPoint(points) {
+    for (let index = points.length - 1; index >= 0; index -= 1) {
+      if (isFiniteNumber(points[index][1])) return points[index];
+    }
+    return null;
+  }
+
   function renderLegend() {
-    refs.legendCount.textContent = String(state.series.length);
-    refs.legend.replaceChildren(...state.series.map((series) => {
+    const sortedSeries = state.series
+      .map((series, index) => ({ series, index, latestPoint: findLatestValidPoint(series.points) }))
+      .sort((left, right) => {
+        const leftOnline = left.latestPoint?.[1];
+        const rightOnline = right.latestPoint?.[1];
+        if (!isFiniteNumber(leftOnline)) return isFiniteNumber(rightOnline) ? 1 : left.index - right.index;
+        if (!isFiniteNumber(rightOnline)) return -1;
+        return rightOnline - leftOnline || left.index - right.index;
+      });
+    refs.legendCount.textContent = `${state.series.length} 条曲线`;
+    refs.legend.replaceChildren(...sortedSeries.map(({ series, latestPoint }) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `legend-item${series.aggregate ? ' aggregate' : ''}${state.hidden.has(series.id) ? ' off' : ''}`;
@@ -498,7 +652,7 @@
       name.textContent = series.label;
       const meta = document.createElement('span');
       meta.className = 'legend-meta';
-      meta.textContent = series.meta;
+      meta.textContent = latestPoint ? formatNumber(latestPoint[1]) : '--';
       button.append(swatch, name, meta);
       button.addEventListener('click', () => {
         if (state.hidden.has(series.id)) state.hidden.delete(series.id);
@@ -519,7 +673,8 @@
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     svg.replaceChildren();
     const visible = state.series.filter((series) => !state.hidden.has(series.id));
-    const numericPoints = visible.flatMap((series) => series.points.filter((point) => isFiniteNumber(point[1])));
+    const plottableSeries = visible.filter((series) => series.points.some((point) => isFiniteNumber(point[1])));
+    const numericPoints = plottableSeries.flatMap((series) => series.points.filter((point) => isFiniteNumber(point[1])));
     refs.chartEmpty.hidden = numericPoints.length > 0;
     if (numericPoints.length === 0 || state.dateFiles.length === 0) {
       svg.dataset.chart = '';
@@ -529,12 +684,11 @@
 
     const startMs = state.dateFiles[0].startMs + state.startMinute * 60_000;
     const endMs = state.dateFiles[0].startMs + state.endMinute * 60_000 + 59_999;
-    const maxY = niceMax(numericPoints.reduce((maximum, point) => Math.max(maximum, point[1]), 0));
+    const yScale = buildYAxisScale(numericPoints.map((point) => point[1]), plot.height);
     const scaleX = (value) => plot.x + (value - startMs) / Math.max(1, endMs - startMs) * plot.width;
-    const scaleY = (value) => plot.y + plot.height - value / maxY * plot.height;
+    const scaleY = (value) => plot.y + plot.height - (value - yScale.min) / Math.max(1, yScale.max - yScale.min) * plot.height;
 
-    for (let index = 0; index <= 5; index += 1) {
-      const value = maxY * index / 5;
+    for (const value of yScale.ticks) {
       const y = scaleY(value);
       svg.append(svgLine(plot.x, y, plot.x + plot.width, y, 'grid-line'));
       svg.append(svgText(plot.x - 10, y + 4, formatCompact(value), 'axis-label', 'end'));
@@ -558,7 +712,14 @@
       }
     }
 
-    for (const series of visible) {
+    if (plottableSeries.length === 1) {
+      const peakValue = plottableSeries[0].points.reduce((maximum, point) => isFiniteNumber(point[1]) ? Math.max(maximum, point[1]) : maximum, 0);
+      const peakY = scaleY(peakValue);
+      svg.append(svgLine(plot.x, peakY, plot.x + plot.width, peakY, 'peak-line'));
+      svg.append(svgText(plot.x + plot.width - 4, peakY - 7, `峰值 ${formatCompact(peakValue)}`, 'peak-label', 'end'));
+    }
+
+    for (const series of plottableSeries) {
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('d', buildPath(series.points, scaleX, scaleY));
       path.setAttribute('stroke', series.color);
@@ -703,6 +864,18 @@
     return new Intl.DateTimeFormat('zh-CN', options).format(new Date(timestamp));
   }
 
+  function formatHistoryDateLabel(date) {
+    const parts = date.split('-').map(Number);
+    return parts.length === 3 && parts.every(Number.isFinite) ? `${parts[1]}/${parts[2]}` : date;
+  }
+
+  function formatSessionDuration(durationMs) {
+    const seconds = Math.max(0, Math.floor(Number(durationMs) / 1000));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  }
+
   function formatAxisTime(timestamp) {
     const includeDate = state.dateFiles.length === 2;
     return new Intl.DateTimeFormat('zh-CN', {
@@ -723,22 +896,55 @@
     return String(Math.round(value));
   }
 
-  function colorForRoom(roomId) {
+  function colorForRoom(roomId, index = -1) {
+    if (Number.isInteger(index) && index >= 0) return colorForTrend(index);
     let hash = 2166136261;
     for (const char of roomId) {
       hash ^= char.charCodeAt(0);
       hash = Math.imul(hash, 16777619);
     }
-    return PALETTE[Math.abs(hash) % PALETTE.length];
+    return colorForTrend(Math.abs(hash));
   }
 
-  function niceMax(value) {
-    if (!value || value <= 0) return 5;
-    const exponent = Math.floor(Math.log10(value));
-    const magnitude = 10 ** exponent;
-    const normalized = value / magnitude;
-    const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-    return nice * magnitude;
+  function colorForTrend(index) {
+    const safeIndex = Math.max(0, Number(index) || 0);
+    if (safeIndex < PALETTE.length) return PALETTE[safeIndex];
+    const hue = (safeIndex * 137.508) % 360;
+    const saturation = safeIndex % 2 === 0 ? 78 : 68;
+    const lightness = safeIndex % 3 === 0 ? 60 : 54;
+    return `hsl(${hue.toFixed(1)} ${saturation}% ${lightness}%)`;
+  }
+
+  function buildYAxisScale(values, plotHeight) {
+    const numeric = values.filter(isFiniteNumber);
+    if (numeric.length === 0) return { min: 0, max: 5, ticks: [0, 1, 2, 3, 4, 5] };
+    const bounds = numeric.reduce((result, value) => ({
+      min: Math.min(result.min, value),
+      max: Math.max(result.max, value)
+    }), { min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY });
+    const rawSpan = bounds.max - bounds.min;
+    const referenceSpan = rawSpan > 0 ? rawSpan : Math.max(1, Math.abs(bounds.max) * 0.1);
+    const padding = Math.max(1, referenceSpan * 0.04, Math.abs(bounds.max) * 0.015);
+    const useZeroBaseline = bounds.min <= 0 || (bounds.max > 0 && bounds.min <= bounds.max * 0.18);
+    const paddedMin = useZeroBaseline ? 0 : Math.max(0, bounds.min - padding);
+    const paddedMax = Math.max(paddedMin + 1, bounds.max + padding);
+    const targetIntervals = clamp(Math.floor(plotHeight / 50), 4, 8);
+    const step = getNiceAxisStep((paddedMax - paddedMin) / targetIntervals);
+    const min = useZeroBaseline ? 0 : Math.floor(paddedMin / step) * step;
+    const max = Math.max(min + step, Math.ceil(paddedMax / step) * step);
+    const ticks = [];
+    for (let value = min; value <= max + step / 2; value += step) {
+      ticks.push(Number(value.toPrecision(12)));
+    }
+    return { min, max, ticks };
+  }
+
+  function getNiceAxisStep(rawStep) {
+    if (!isFiniteNumber(rawStep) || rawStep <= 0) return 1;
+    const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+    const normalized = rawStep / magnitude;
+    const multiplier = [1, 2, 2.5, 5, 10].find((candidate) => normalized <= candidate) || 10;
+    return multiplier * magnitude;
   }
 
   function svgLine(x1, y1, x2, y2, className) {
@@ -779,6 +985,10 @@
     return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`;
   }
 
+  function areAdjacentDates(left, right) {
+    return getNextDate(left) === right || getNextDate(right) === left;
+  }
+
   function compareRoomIds(left, right) {
     return left.localeCompare(right, undefined, { numeric: true });
   }
@@ -810,9 +1020,16 @@
     state.endMinute = isFiniteNumber(saved.endMinute) ? saved.endMinute : 1439;
     state.roomId = typeof saved.roomId === 'string' ? saved.roomId : '';
     state.sessionId = typeof saved.sessionId === 'string' ? saved.sessionId : '';
-    state.scopes = new Set(Array.isArray(saved.scopes) ? saved.scopes.filter((item) => typeof item === 'string') : ['all']);
+    const legacyScopes = Array.isArray(saved.scopes)
+      ? saved.scopes.filter((item) => typeof item === 'string')
+      : null;
+    state.filters = new Set(Array.isArray(saved.filters)
+      ? saved.filters.filter((item) => typeof item === 'string') : legacyScopes ?? ['all']);
+    state.aggregates = new Set(Array.isArray(saved.aggregates)
+      ? saved.aggregates.filter((item) => typeof item === 'string') : legacyScopes ?? []);
     state.hidden = new Set(Array.isArray(saved.hidden) ? saved.hidden.filter((item) => typeof item === 'string') : []);
-    state.height = [360, 480, 620].includes(saved.height) ? saved.height : 480;
+    state.theme = saved.theme === 'light' || saved.theme === 'dark' ? saved.theme : 'system';
+    state.height = isFiniteNumber(saved.height) ? clamp(saved.height, 160, 640) : 480;
   }
 
   function persistState() {
@@ -823,8 +1040,10 @@
       endMinute: state.endMinute,
       roomId: state.roomId,
       sessionId: state.sessionId,
-      scopes: Array.from(state.scopes),
+      filters: Array.from(state.filters),
+      aggregates: Array.from(state.aggregates),
       hidden: Array.from(state.hidden),
+      theme: state.theme,
       height: state.height
     }));
   }
