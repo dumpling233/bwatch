@@ -668,8 +668,7 @@
     const svg = refs.chart;
     const width = Math.max(320, refs.chartFrame.clientWidth || 900);
     const height = Math.max(260, refs.chartFrame.clientHeight || state.height);
-    const margin = { top: 24, right: 24, bottom: 42, left: 62 };
-    const plot = { x: margin.left, y: margin.top, width: width - margin.left - margin.right, height: height - margin.top - margin.bottom };
+    const fixedMargin = { top: 24, right: 24, bottom: 42 };
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     svg.replaceChildren();
     const visible = state.series.filter((series) => !state.hidden.has(series.id));
@@ -684,14 +683,21 @@
 
     const startMs = state.dateFiles[0].startMs + state.startMinute * 60_000;
     const endMs = state.dateFiles[0].startMs + state.endMinute * 60_000 + 59_999;
-    const yScale = buildYAxisScale(numericPoints.map((point) => point[1]), plot.height);
+    const plotHeight = height - fixedMargin.top - fixedMargin.bottom;
+    const yScale = buildYAxisScale(numericPoints.map((point) => point[1]), plotHeight);
+    const longestYLabel = yScale.ticks.reduce((length, value) => Math.max(length, formatNumber(value).length), 1);
+    const margin = {
+      ...fixedMargin,
+      left: Math.min(Math.max(62, longestYLabel * 7 + 18), Math.max(62, width * 0.3))
+    };
+    const plot = { x: margin.left, y: margin.top, width: width - margin.left - margin.right, height: plotHeight };
     const scaleX = (value) => plot.x + (value - startMs) / Math.max(1, endMs - startMs) * plot.width;
     const scaleY = (value) => plot.y + plot.height - (value - yScale.min) / Math.max(1, yScale.max - yScale.min) * plot.height;
 
     for (const value of yScale.ticks) {
       const y = scaleY(value);
       svg.append(svgLine(plot.x, y, plot.x + plot.width, y, 'grid-line'));
-      svg.append(svgText(plot.x - 10, y + 4, formatCompact(value), 'axis-label', 'end'));
+      svg.append(svgText(plot.x - 10, y + 4, formatNumber(value), 'axis-label', 'end'));
     }
     const xTickCount = width < 620 ? 4 : 7;
     for (let index = 0; index <= xTickCount; index += 1) {
@@ -716,7 +722,7 @@
       const peakValue = plottableSeries[0].points.reduce((maximum, point) => isFiniteNumber(point[1]) ? Math.max(maximum, point[1]) : maximum, 0);
       const peakY = scaleY(peakValue);
       svg.append(svgLine(plot.x, peakY, plot.x + plot.width, peakY, 'peak-line'));
-      svg.append(svgText(plot.x + plot.width - 4, peakY - 7, `峰值 ${formatCompact(peakValue)}`, 'peak-label', 'end'));
+      svg.append(svgText(plot.x + plot.width - 4, peakY - 7, `峰值 ${formatNumber(peakValue)}`, 'peak-label', 'end'));
     }
 
     for (const series of plottableSeries) {

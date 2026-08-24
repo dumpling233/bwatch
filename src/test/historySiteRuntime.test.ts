@@ -69,6 +69,16 @@ test('history site supports dark mode, plugin colors, and a single-series peak g
   assert.match(source, /'#3B82F6', '#22C55E', '#EAB308', '#EF4444'/);
 });
 
+test('history site displays complete viewer counts without compact units', () => {
+  const context = vm.createContext({ Intl });
+  vm.runInContext(extractFunction('formatNumber', 'formatCompact'), context);
+  assert.equal(vm.runInContext('formatNumber(1400)', context), '1,400');
+  assert.equal(vm.runInContext('formatNumber(12345678)', context), '12,345,678');
+  assert.doesNotMatch(extractFunction('renderChart', 'buildPath'), /formatCompact/);
+  assert.match(source, /formatNumber\(value\), 'axis-label'/);
+  assert.match(source, /`峰值 \$\{formatNumber\(peakValue\)\}`/);
+});
+
 test('history site declares cache, persistence, dual-day, and failure states', () => {
   assert.match(source, /cache: 'no-store'/);
   assert.match(source, /localStorage\.setItem/);
