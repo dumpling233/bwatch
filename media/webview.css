@@ -1601,6 +1601,155 @@ button:hover {
   outline: none;
 }
 
+.history-session-peak {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.session-peak-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.session-peak-title {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.session-peak-range-controls {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.session-peak-range-button {
+  min-width: 0;
+  height: 22px;
+  border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+  border-radius: 4px;
+  padding: 0 7px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.session-peak-range-button:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.session-peak-range-button.active {
+  border-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.session-peak-chart {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 360px;
+  height: 180px;
+  overflow: hidden;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  background: var(--vscode-editor-background);
+}
+
+.session-peak-chart svg {
+  display: block;
+  width: 100%;
+  min-width: 360px;
+  height: 100%;
+}
+
+.session-peak-placeholder {
+  display: grid;
+  height: 180px;
+  place-items: center;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editor-background);
+  font-size: 11px;
+}
+
+.session-peak-grid-line {
+  stroke: var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  stroke-width: 1;
+  opacity: 0.72;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-peak-axis-line {
+  stroke: var(--vscode-descriptionForeground);
+  stroke-width: 1;
+  opacity: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-peak-axis-text {
+  fill: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-peak-line {
+  fill: none;
+  stroke: var(--vscode-charts-blue, #3b82f6);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-peak-point {
+  fill: var(--vscode-charts-blue, #3b82f6);
+  stroke: var(--vscode-editor-background);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-peak-point.selected {
+  fill: var(--vscode-charts-orange, #f97316);
+  stroke: var(--vscode-charts-orange, #f97316);
+}
+
+.session-peak-hit-area {
+  fill: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+.session-peak-hit-area:focus {
+  stroke: var(--vscode-focusBorder);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-peak-tooltip {
+  pointer-events: none;
+  transform: translate(8px, -100%);
+}
+
+.session-peak-tooltip.align-right {
+  transform: translate(calc(-100% - 8px), -100%);
+}
+
+.session-peak-tooltip-row {
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 @media (max-width: 460px) {
   .history-session-selects {
     grid-template-columns: 1fr;

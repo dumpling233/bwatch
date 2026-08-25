@@ -49,6 +49,9 @@
   const TREND_CHART_MIN_WIDTH = 360;
   const TREND_CHART_HEIGHT = 86;
   const OVERVIEW_CHART_MIN_WIDTH = 360;
+  const SESSION_PEAK_CHART_MIN_WIDTH = 360;
+  const SESSION_PEAK_CHART_HEIGHT = 180;
+  const SESSION_PEAK_RANGES = [10, 30, 'all'];
   const AGGREGATE_CHART_DEFAULT_HEIGHT = 240;
   const AGGREGATE_CHART_MIN_HEIGHT = 160;
   const AGGREGATE_CHART_MAX_HEIGHT = 640;
@@ -112,6 +115,7 @@
   let roomHistoryAnalysisLoaded = false;
   let roomHistoryAnalysisError = '';
   let selectedRoomSessionKey = persistedState.selectedRoomSessionKey;
+  let sessionPeakRange = persistedState.sessionPeakRange;
   let durationTicker = undefined;
   const responsiveChartCleanups = [];
 
@@ -1414,6 +1418,208 @@
     return field;
   }
 
+  function normalizeSessionPeakRange(value) {
+    return value === 'all' ? 'all' : Number(value) === 10 ? 10 : 30;
+  }
+
+  function getVisibleSessionPeakSessions(sessions, range = sessionPeakRange) {
+    const sorted = [...(Array.isArray(sessions) ? sessions : [])]
+      .sort((left, right) => left.startMs - right.startMs);
+    const normalizedRange = normalizeSessionPeakRange(range);
+    return normalizedRange === 'all' ? sorted : sorted.slice(-normalizedRange);
+  }
+
+  function buildHistorySessionPeakTrend() {
+    if (!roomHistoryAnalysisRoomId) {
+      return undefined;
+    }
+    const section = document.createElement('div');
+    section.className = 'history-session-peak';
+    const heading = document.createElement('div');
+    heading.className = 'session-peak-heading';
+    const title = document.createElement('span');
+    title.className = 'session-peak-title';
+    title.textContent = '场次峰值';
+    const controls = document.createElement('div');
+    controls.className = 'session-peak-range-controls';
+    for (const range of SESSION_PEAK_RANGES) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'session-peak-range-button';
+      button.classList.toggle('active', sessionPeakRange === range);
+      button.textContent = range === 'all' ? '全部' : `最近${range}场`;
+      button.title = `展示${range === 'all' ? '全部直播场次' : `最近 ${range} 场直播`}的峰值`;
+      button.addEventListener('click', () => {
+        sessionPeakRange = range;
+        persistUiState();
+        renderHistoryTrend();
+      });
+      controls.append(button);
+    }
+    heading.append(title, controls);
+    section.append(heading);
+
+    if (roomHistoryAnalysisLoading || !roomHistoryAnalysisLoaded) {
+      section.append(sessionPeakPlaceholder('正在读取直播场次'));
+    } else if (roomHistoryAnalysisError) {
+      section.append(sessionPeakPlaceholder(roomHistoryAnalysisError));
+    } else {
+      const sessions = getVisibleSessionPeakSessions(roomHistoryAnalysisSessions);
+      section.append(sessions.length > 0
+        ? buildSessionPeakChart(sessions)
+        : sessionPeakPlaceholder('暂无可识别的直播场次'));
+    }
+    return section;
+  }
+
+  function sessionPeakPlaceholder(message) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'session-peak-placeholder';
+    placeholder.textContent = message;
+    return placeholder;
+  }
+
+  function buildSessionPeakChart(sessions) {
+    const chart = document.createElement('div');
+    chart.className = 'session-peak-chart';
+    const tooltip = document.createElement('div');
+    tooltip.className = 'overview-tooltip session-peak-tooltip';
+    tooltip.hidden = true;
+    chart.append(tooltip);
+    observeResponsiveSvg(chart, SESSION_PEAK_CHART_MIN_WIDTH, (width) => {
+      chart.replaceChildren(buildSessionPeakSvg(width, sessions, tooltip), tooltip);
+    });
+    return chart;
+  }
+
+  function buildSessionPeakSvg(width, sessions, tooltip) {
+    const height = SESSION_PEAK_CHART_HEIGHT;
+    const padding = { left: 58, right: 14, top: 18, bottom: 40 };
+    const plotWidth = Math.max(1, width - padding.left - padding.right);
+    const plotHeight = Math.max(1, height - padding.top - padding.bottom);
+    const maxPeak = Math.max(1, ...sessions.map((session) => Math.max(0, Number(session.peakOnline) || 0)));
+    const svg = createSvgElement('svg');
+    svg.setAttribute('width', String(width));
+    svg.setAttribute('height', String(height));
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', '主播直播场次峰值在线人数走势图');
+    const xAt = (index) => sessions.length <= 1
+      ? padding.left + plotWidth / 2
+      : padding.left + index / (sessions.length - 1) * plotWidth;
+    const yAt = (peak) => padding.top + plotHeight
+      - Math.max(0, Number(peak) || 0) / maxPeak * plotHeight;
+
+    for (const tick of buildAdaptiveNumberTicks({ min: 0, max: maxPeak }, plotHeight)) {
+      const y = yAt(tick);
+      const grid = createSvgElement('line');
+      grid.setAttribute('class', 'session-peak-grid-line');
+      grid.setAttribute('x1', String(padding.left));
+      grid.setAttribute('x2', String(width - padding.right));
+      grid.setAttribute('y1', formatSvgNumber(y));
+      grid.setAttribute('y2', formatSvgNumber(y));
+      svg.append(grid, svgText(formatNumber(tick), padding.left - 7, y + 4, 'session-peak-axis-text', 'end'));
+    }
+    const axis = createSvgElement('line');
+    axis.setAttribute('class', 'session-peak-axis-line');
+    axis.setAttribute('x1', String(padding.left));
+    axis.setAttribute('x2', String(width - padding.right));
+    axis.setAttribute('y1', String(height - padding.bottom));
+    axis.setAttribute('y2', String(height - padding.bottom));
+    svg.append(axis);
+
+    if (sessions.length > 1) {
+      const path = createSvgElement('path');
+      path.setAttribute('class', 'session-peak-line');
+      path.setAttribute('d', sessions.map((session, index) =>
+        `${index === 0 ? 'M' : 'L'} ${formatSvgNumber(xAt(index))} ${formatSvgNumber(yAt(session.peakOnline))}`
+      ).join(' '));
+      svg.append(path);
+    }
+
+    const yearCount = new Set(sessions.map((session) => new Date(session.startMs).getFullYear())).size;
+    const ticks = buildSessionPeakTickIndexes(sessions.length, Math.max(2, Math.floor(plotWidth / 74)));
+    for (const index of ticks) {
+      const date = new Date(sessions[index].startMs);
+      const monthDay = `${padClockPart(date.getMonth() + 1)}/${padClockPart(date.getDate())}`;
+      const label = yearCount > 1 ? `${date.getFullYear()}/${monthDay}` : monthDay;
+      svg.append(svgText(
+        label,
+        xAt(index),
+        height - 9,
+        'session-peak-axis-text',
+        index === 0 ? 'start' : index === sessions.length - 1 ? 'end' : 'middle'
+      ));
+    }
+
+    sessions.forEach((session, index) => {
+      const x = xAt(index);
+      const y = yAt(session.peakOnline);
+      const selected = getSessionKey(session) === selectedRoomSessionKey;
+      const point = createSvgElement('circle');
+      point.setAttribute('class', `session-peak-point${selected ? ' selected' : ''}`);
+      point.setAttribute('cx', formatSvgNumber(x));
+      point.setAttribute('cy', formatSvgNumber(y));
+      point.setAttribute('r', selected ? '4.5' : '3.5');
+      svg.append(point);
+      const hitArea = createSvgElement('circle');
+      hitArea.setAttribute('class', 'session-peak-hit-area');
+      hitArea.setAttribute('cx', formatSvgNumber(x));
+      hitArea.setAttribute('cy', formatSvgNumber(y));
+      hitArea.setAttribute('r', '10');
+      hitArea.setAttribute('tabindex', '0');
+      const show = () => updateSessionPeakTooltip(tooltip, session, x, y, width);
+      hitArea.addEventListener('mouseenter', show);
+      hitArea.addEventListener('focus', show);
+      hitArea.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+      hitArea.addEventListener('blur', () => { tooltip.hidden = true; });
+      hitArea.addEventListener('click', () => selectRoomSession(session));
+      hitArea.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectRoomSession(session);
+        }
+      });
+      svg.append(hitArea);
+    });
+    return svg;
+  }
+
+  function buildSessionPeakTickIndexes(length, maxTicks) {
+    if (length <= maxTicks) {
+      return Array.from({ length }, (_, index) => index);
+    }
+    const indexes = new Set([0, length - 1]);
+    const intervals = Math.max(1, maxTicks - 1);
+    for (let index = 1; index < intervals; index += 1) {
+      indexes.add(Math.round(index * (length - 1) / intervals));
+    }
+    return [...indexes].sort((left, right) => left - right);
+  }
+
+  function updateSessionPeakTooltip(tooltip, session, x, y, width) {
+    tooltip.replaceChildren();
+    const time = document.createElement('div');
+    time.className = 'overview-tooltip-time';
+    time.textContent = `${formatFullSessionDateTime(session.startMs)} - ${formatFullSessionDateTime(session.endMs)}`;
+    const peak = document.createElement('div');
+    peak.className = 'session-peak-tooltip-row';
+    peak.textContent = `峰值在线人数 ${formatNumber(session.peakOnline)}`;
+    const duration = document.createElement('div');
+    duration.className = 'session-peak-tooltip-row';
+    duration.textContent = `直播时长 ${formatSessionDuration(session.durationMs)}`;
+    tooltip.append(time, peak, duration);
+    tooltip.hidden = false;
+    tooltip.style.left = `${Math.max(6, Math.min(width - 8, x))}px`;
+    tooltip.style.top = `${Math.max(6, y - 8)}px`;
+    tooltip.classList.toggle('align-right', x > width * 0.62);
+  }
+
+  function formatFullSessionDateTime(timestampMs) {
+    const date = new Date(timestampMs);
+    return `${date.getFullYear()}-${padClockPart(date.getMonth() + 1)}-${padClockPart(date.getDate())} ${padClockPart(date.getHours())}:${padClockPart(date.getMinutes())}`;
+  }
+
   function buildHistoryTrend() {
     const panel = document.createElement('section');
     panel.className = 'overview-trend-panel history-trend-panel';
@@ -1435,7 +1641,12 @@
 
     const datePicker = buildHistoryCalendar();
     const timeControls = buildHistoryTimeControls();
-    header.append(buildHistorySessionFilter(), scopeField, datePicker, timeControls, buildAggregateChartHeightControl('history'));
+    const sessionPeakTrend = buildHistorySessionPeakTrend();
+    header.append(buildHistorySessionFilter());
+    if (sessionPeakTrend) {
+      header.append(sessionPeakTrend);
+    }
+    header.append(scopeField, datePicker, timeControls, buildAggregateChartHeightControl('history'));
     panel.append(header);
 
     if (historyLoading) {
@@ -2774,6 +2985,7 @@
       openRoomGroupEditors: Array.from(openRoomGroupEditors),
       roomHistoryAnalysisRoomId,
       selectedRoomSessionKey,
+      sessionPeakRange,
       historySessionHiddenRoomIdsBackup: historySessionHiddenRoomIdsBackup ? Array.from(historySessionHiddenRoomIdsBackup) : undefined,
       historyTrendExpanded,
       historySelectedDates,
@@ -2828,6 +3040,7 @@
       selectedRoomSessionKey: typeof safeState.selectedRoomSessionKey === 'string'
         ? safeState.selectedRoomSessionKey
         : '',
+      sessionPeakRange: normalizeSessionPeakRange(safeState.sessionPeakRange),
       historySessionHiddenRoomIdsBackup: Array.isArray(safeState.historySessionHiddenRoomIdsBackup)
         ? safeState.historySessionHiddenRoomIdsBackup.filter((roomId) => typeof roomId === 'string')
         : undefined,

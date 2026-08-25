@@ -60,6 +60,59 @@ test('history trend exposes a cascading room and session filter', () => {
   assert.equal(source.includes('maxEndMs = startOfDay.getTime() + 2 * 24 * 60 * 60 * 1000'), true);
 });
 
+test('session peak trend sorts sessions, applies range limits, and persists its controls', () => {
+  const source = readWebviewSource();
+  const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
+  const context = vm.createContext({ sessionPeakRange: 30 });
+  vm.runInContext(
+    `${extractFunction(source, 'normalizeSessionPeakRange', 'getVisibleSessionPeakSessions')}\n`
+      + extractFunction(source, 'getVisibleSessionPeakSessions', 'buildHistorySessionPeakTrend'),
+    context
+  );
+  const getVisibleSessions = vm.runInContext('getVisibleSessionPeakSessions', context) as (
+    sessions: Array<{ startMs: number }>,
+    range: 10 | 30 | 'all'
+  ) => Array<{ startMs: number }>;
+  const sessions = Array.from({ length: 35 }, (_, index) => ({ startMs: 35 - index }));
+
+  assert.deepEqual(
+    Array.from(getVisibleSessions(sessions, 10), (session) => session.startMs),
+    Array.from({ length: 10 }, (_, index) => index + 26)
+  );
+  assert.deepEqual(
+    Array.from(getVisibleSessions(sessions, 30), (session) => session.startMs),
+    Array.from({ length: 30 }, (_, index) => index + 6)
+  );
+  assert.deepEqual(
+    Array.from(getVisibleSessions(sessions, 'all'), (session) => session.startMs),
+    Array.from({ length: 35 }, (_, index) => index + 1)
+  );
+
+  const historySource = extractFunction(source, 'buildHistoryTrend', 'buildHistoryCalendar');
+  assert.ok(
+    historySource.indexOf('header.append(buildHistorySessionFilter())')
+      < historySource.indexOf('header.append(sessionPeakTrend)')
+  );
+  assert.ok(
+    historySource.indexOf('header.append(sessionPeakTrend)')
+      < historySource.indexOf('header.append(scopeField')
+  );
+  assert.equal(vm.runInContext('normalizeSessionPeakRange(undefined)', context), 30);
+  assert.match(source, /const SESSION_PEAK_CHART_HEIGHT = 180/);
+  assert.match(source, /sessionPeakRange:\s*normalizeSessionPeakRange/);
+  assert.match(source, /sessionPeakRange,\s*\n/);
+  assert.match(source, /hitArea\.addEventListener\('click', \(\) => selectRoomSession\(session\)\)/);
+  assert.match(source, /buildAdaptiveNumberTicks\(\{ min: 0, max: maxPeak \}/);
+  assert.match(css, /\.session-peak-chart\s*\{[^}]*height:\s*180px/s);
+  assert.match(css, /\.session-peak-placeholder\s*\{[^}]*height:\s*180px/s);
+  assert.match(css, /\.session-peak-chart\s*\{[^}]*min-width:\s*360px[^}]*overflow:\s*hidden/s);
+  assert.doesNotMatch(css, /\.session-peak-scroll/);
+  assert.doesNotMatch(css, /\.session-peak-chart\s*\{[^}]*overflow-x:\s*auto/s);
+  assert.match(source, /observeResponsiveSvg\(chart, SESSION_PEAK_CHART_MIN_WIDTH/);
+  assert.match(source, /padding = \{ left: 58, right: 14, top: 18, bottom: 40 \}/);
+  assert.match(css, /\.session-peak-range-button\.active\s*\{[^}]*background:\s*var\(--vscode-button-background\)/s);
+});
+
 test('overview legend sorts latest online values without breaking chart rendering', () => {
   const source = readWebviewSource();
   const buildOverviewSvgSource = extractFunction(source, 'buildOverviewSvg', 'overviewLegend');
