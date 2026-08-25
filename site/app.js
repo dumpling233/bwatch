@@ -9,9 +9,12 @@
     '#0EA5E9', '#D946EF', '#E879F9', '#10B981', '#F59E0B', '#6366F1',
     '#FB7185', '#2DD4BF', '#A3E635', '#38BDF8', '#C084FC', '#FB923C'
   ];
+  const SESSION_PEAK_CHART_MIN_WIDTH = 360;
+  const SESSION_PEAK_CHART_HEIGHT = 180;
+  const SESSION_PEAK_RANGES = [10, 30, 'all'];
 
   const refs = Object.fromEntries([
-    'exportStatus', 'themeToggle', 'dateInput', 'dateButtons', 'roomSelect', 'sessionSelect', 'clearSession', 'heightRange', 'heightLabel',
+    'exportStatus', 'themeToggle', 'dateInput', 'dateButtons', 'roomSelect', 'sessionSelect', 'clearSession', 'sessionPeakTrend', 'heightRange', 'heightLabel',
     'rangeStart', 'rangeEnd', 'rangeFill', 'rangeLabel', 'scopeFilters', 'notice', 'chartSummary',
     'chartFrame', 'chart', 'tooltip', 'chartEmpty', 'legend', 'legendCount', 'hideAll', 'showAll'
   ].map((id) => [id, document.getElementById(id)]));
@@ -22,6 +25,11 @@
     selectedDate: '',
     twoDays: false,
     startMinute: 0,
+    sessions: [],
+    sessionsLoading: false,
+    sessionsLoaded: false,
+    sessionsError: '',
+    sessionPeakRange: 30,
     endMinute: 1439,
     roomId: '',
     sessionId: '',
@@ -350,15 +358,25 @@
   }
 
   async function populateSessions() {
+    state.sessions = [];
+    state.sessionsLoading = Boolean(state.roomId);
+    state.sessionsLoaded = false;
+    state.sessionsError = '';
+
     refs.sessionSelect.replaceChildren(option('', state.roomId ? '正在读取直播场次' : '先选择主播'));
     refs.sessionSelect.disabled = !state.roomId;
     refs.clearSession.hidden = !state.roomId;
     if (!state.roomId) {
       refs.sessionSelect.dataset.sessions = '[]';
+      state.sessionsLoading = false;
+      renderSessionPeakTrend();
       return;
     }
     const room = state.manifest.rooms.find((item) => item.roomId === state.roomId);
     if (!room) {
+      state.sessionsLoading = false;
+      state.sessionsLoaded = true;
+      renderSessionPeakTrend();
       return;
     }
     try {
@@ -378,6 +396,9 @@
         ))
       );
       refs.sessionSelect.disabled = false;
+      state.sessions = value.sessions;
+      state.sessionsLoading = false;
+      state.sessionsLoaded = true;
       refs.sessionSelect.dataset.sessions = JSON.stringify(value.sessions);
       if (value.sessions.some((session) => sessionKey(session) === state.sessionId)) {
         refs.sessionSelect.value = state.sessionId;
@@ -388,8 +409,235 @@
       refs.sessionSelect.replaceChildren(option('', '场次读取失败'));
       refs.sessionSelect.disabled = true;
       showNotice(error instanceof Error ? error.message : '场次数据加载失败。', true);
+      state.sessionsError = error instanceof Error ? error.message : '场次数据加载失败。';
+      state.sessionsLoading = false;
+      state.sessionsLoaded = true;
     }
   }
+
+  function normalizeSessionPeakRange(value) {
+    return value === 'all' ? 'all' : Number(value) === 10 ? 10 : 30;
+  }
+
+  function getVisibleSessionPeakSessions(sessions, range = state.sessionPeakRange) {
+    const sorted = [...(Array.isArray(sessions) ? sessions : [])]
+      .filter((session) => isFiniteNumber(session.startMs) && isFiniteNumber(session.endMs))
+      .sort((left, right) => left.startMs - right.startMs);
+    const normalizedRange = normalizeSessionPeakRange(range);
+    return normalizedRange === 'all' ? sorted : sorted.slice(-normalizedRange);
+  }
+
+  function renderSessionPeakTrend() {
+    if (!refs.sessionPeakTrend) return;
+    refs.sessionPeakTrend.hidden = !state.roomId;
+    refs.sessionPeakTrend.replaceChildren();
+    if (!state.roomId) return;
+
+    const heading = document.createElement('div');
+    heading.className = 'session-peak-heading';
+    const title = document.createElement('span');
+    title.className = 'session-peak-title';
+    title.textContent = '场次峰值';
+    const controls = document.createElement('div');
+    controls.className = 'session-peak-range-controls';
+    for (const range of SESSION_PEAK_RANGES) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'session-peak-range-button';
+      button.classList.toggle('active', state.sessionPeakRange === range);
+      button.textContent = range === 'all' ? '全部' : '最近' + range + '场';
+      button.title = range === 'all' ? '展示全部直播场次的峰值' : '展示最近 ' + range + ' 场直播的峰值';
+      button.addEventListener('click', () => {
+        state.sessionPeakRange = range;
+        persistState();
+        renderSessionPeakTrend();
+      });
+      controls.append(button);
+    }
+    heading.append(title, controls);
+    refs.sessionPeakTrend.append(heading);
+
+    if (state.sessionsLoading || !state.sessionsLoaded) {
+      refs.sessionPeakTrend.append(sessionPeakPlaceholder('正在读取直播场次'));
+      return;
+    }
+    if (state.sessionsError) {
+      refs.sessionPeakTrend.append(sessionPeakPlaceholder(state.sessionsError));
+      return;
+    }
+    const sessions = getVisibleSessionPeakSessions(state.sessions);
+    refs.sessionPeakTrend.append(sessions.length ? buildSessionPeakChart(sessions) : sessionPeakPlaceholder('暂无可识别的直播场次'));
+  }
+
+  function sessionPeakPlaceholder(message) {
+    const element = document.createElement('div');
+    element.className = 'session-peak-placeholder';
+    element.textContent = message;
+    return element;
+  }
+
+  function buildSessionPeakChart(sessions) {
+    const chart = document.createElement('div');
+    chart.className = 'session-peak-chart';
+    const tooltip = document.createElement('div');
+    tooltip.className = 'session-peak-tooltip';
+    tooltip.hidden = true;
+    chart.append(tooltip);
+    const width = Math.max(SESSION_PEAK_CHART_MIN_WIDTH, chart.clientWidth || refs.sessionPeakTrend.clientWidth || 900);
+    chart.replaceChildren(buildSessionPeakSvg(width, sessions, tooltip), tooltip);
+    return chart;
+  }
+
+  function buildSessionPeakSvg(width, sessions, tooltip) {
+    const height = SESSION_PEAK_CHART_HEIGHT;
+    const padding = { left: 58, right: 14, top: 18, bottom: 40 };
+    const plotWidth = Math.max(1, width - padding.left - padding.right);
+    const plotHeight = Math.max(1, height - padding.top - padding.bottom);
+    const maxPeak = Math.max(1, sessions.reduce((maximum, session) => Math.max(maximum, Number(session.peakOnline) || 0), 0));
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', String(width));
+    svg.setAttribute('height', String(height));
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', '主播直播场次峰值在线人数走势图');
+    const xAt = (index) => sessions.length <= 1 ? padding.left + plotWidth / 2 : padding.left + index / (sessions.length - 1) * plotWidth;
+    const yAt = (peak) => padding.top + plotHeight - Math.max(0, Number(peak) || 0) / maxPeak * plotHeight;
+
+    for (const tick of buildAdaptiveNumberTicks({ min: 0, max: maxPeak }, plotHeight)) {
+      const y = yAt(tick);
+      svg.append(svgLine(padding.left, y, width - padding.right, y, 'session-peak-grid-line'));
+      svg.append(svgText(padding.left - 7, y + 4, formatNumber(tick), 'session-peak-axis-text', 'end'));
+    }
+    svg.append(svgLine(padding.left, height - padding.bottom, width - padding.right, height - padding.bottom, 'session-peak-axis-line'));
+
+    if (sessions.length > 1) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('class', 'session-peak-line');
+      path.setAttribute('d', sessions.map((session, index) => (index ? 'L ' : 'M ') + formatSvgNumber(xAt(index)) + ' ' + formatSvgNumber(yAt(session.peakOnline))).join(' '));
+      svg.append(path);
+    }
+
+    const years = new Set(sessions.map((session) => formatFullSessionDateTime(session.startMs).slice(0, 4))).size;
+    for (const index of buildSessionPeakTickIndexes(sessions.length, Math.max(2, Math.floor(plotWidth / 74)))) {
+      const dateParts = formatFullSessionDateTime(sessions[index].startMs).slice(0, 10).split('-').map(Number);
+      const monthDay = padClockPart(dateParts[1]) + '/' + padClockPart(dateParts[2]);
+      const label = years > 1 ? dateParts[0] + '/' + monthDay : monthDay;
+      svg.append(svgText(xAt(index), height - 9, label, 'session-peak-axis-text', index === 0 ? 'start' : index === sessions.length - 1 ? 'end' : 'middle'));
+    }
+
+    sessions.forEach((session, index) => {
+      const x = xAt(index);
+      const y = yAt(session.peakOnline);
+      const selected = sessionKey(session) === state.sessionId;
+      const point = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      point.setAttribute('class', 'session-peak-point' + (selected ? ' selected' : ''));
+      point.setAttribute('cx', formatSvgNumber(x));
+      point.setAttribute('cy', formatSvgNumber(y));
+      point.setAttribute('r', selected ? '4.5' : '3.5');
+      svg.append(point);
+      const hitArea = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      hitArea.setAttribute('class', 'session-peak-hit-area');
+      hitArea.setAttribute('cx', formatSvgNumber(x));
+      hitArea.setAttribute('cy', formatSvgNumber(y));
+      hitArea.setAttribute('r', '10');
+      hitArea.setAttribute('tabindex', '0');
+      const show = () => updateSessionPeakTooltip(tooltip, session, x, y, width);
+      hitArea.addEventListener('mouseenter', show);
+      hitArea.addEventListener('focus', show);
+      hitArea.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+      hitArea.addEventListener('blur', () => { tooltip.hidden = true; });
+      hitArea.addEventListener('click', () => {
+        state.sessionId = sessionKey(session);
+        refs.sessionSelect.value = state.sessionId;
+        locateSession();
+      });
+      hitArea.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          state.sessionId = sessionKey(session);
+          refs.sessionSelect.value = state.sessionId;
+          locateSession();
+        }
+      });
+      svg.append(hitArea);
+    });
+    return svg;
+  }
+
+  function buildSessionPeakTickIndexes(length, maxTicks) {
+    if (length <= maxTicks) return Array.from({ length }, (_, index) => index);
+    const indexes = new Set([0, length - 1]);
+    const intervals = Math.max(1, maxTicks - 1);
+    for (let index = 1; index < intervals; index += 1) indexes.add(Math.round(index * (length - 1) / intervals));
+    return [...indexes].sort((left, right) => left - right);
+  }
+
+  function updateSessionPeakTooltip(tooltip, session, x, y, width) {
+    tooltip.replaceChildren();
+    const time = document.createElement('div');
+    time.className = 'session-peak-tooltip-time';
+    time.textContent = formatFullSessionDateTime(session.startMs) + ' - ' + formatFullSessionDateTime(session.endMs);
+    const peak = document.createElement('div');
+    peak.className = 'session-peak-tooltip-row';
+    peak.textContent = '峰值在线人数 ' + formatNumber(session.peakOnline);
+    const duration = document.createElement('div');
+    duration.className = 'session-peak-tooltip-row';
+    duration.textContent = '直播时长 ' + formatSessionDuration(session.durationMs);
+    tooltip.append(time, peak, duration);
+    tooltip.hidden = false;
+    tooltip.style.left = Math.max(6, Math.min(width - 8, x)) + 'px';
+    tooltip.style.top = Math.max(6, y - 8) + 'px';
+    tooltip.classList.toggle('align-right', x > width * 0.62);
+  }
+
+  function formatFullSessionDateTime(timestampMs) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: state.manifest?.timeZone || 'Asia/Shanghai',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false
+    }).formatToParts(new Date(timestampMs));
+    const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+    return values.year + '-' + values.month + '-' + values.day + ' ' + values.hour + ':' + values.minute;
+  }
+
+  function buildAdaptiveNumberTicks(scale, plotHeight) {
+    const range = scale.max - scale.min;
+    if (!Number.isFinite(range) || range <= 0) return [scale.min, scale.max];
+    const targetIntervals = Math.max(2, Math.min(10, Math.floor(plotHeight / 58)));
+    const step = getNiceAxisStep(range / targetIntervals);
+    const ticks = [scale.min];
+    const firstTick = Math.ceil(scale.min / step) * step;
+    for (let value = firstTick; value < scale.max; value += step) {
+      const normalized = Number(value.toPrecision(12));
+      if (normalized > scale.min && normalized < scale.max) ticks.push(normalized);
+    }
+    ticks.push(scale.max);
+    return filterAxisTicksBySpacing(ticks, scale.min, scale.max, plotHeight, 34);
+  }
+
+  function filterAxisTicksBySpacing(ticks, min, max, pixelSize, minSpacing) {
+    const uniqueTicks = Array.from(new Set(ticks)).sort((left, right) => left - right);
+    if (uniqueTicks.length <= 2 || max <= min) return uniqueTicks;
+    const result = [uniqueTicks[0]];
+    const lastTick = uniqueTicks[uniqueTicks.length - 1];
+    for (const tick of uniqueTicks.slice(1, -1)) {
+      const previous = result[result.length - 1];
+      const previousDistance = (tick - previous) / (max - min) * pixelSize;
+      const endDistance = (lastTick - tick) / (max - min) * pixelSize;
+      if (previousDistance >= minSpacing && endDistance >= minSpacing) result.push(tick);
+    }
+    result.push(lastTick);
+    return result;
+  }
+
+  function formatSvgNumber(value) {
+    return Number(value).toFixed(2);
+  }
+
+  function padClockPart(value) {
+    return String(value).padStart(2, '0');
+  }
+
 
   async function locateSession() {
     state.sessionId = refs.sessionSelect.value;
@@ -431,6 +679,10 @@
     refs.sessionSelect.disabled = true;
     refs.sessionSelect.dataset.sessions = '[]';
     refs.clearSession.hidden = true;
+    state.sessions = [];
+    state.sessionsLoading = false;
+    state.sessionsLoaded = false;
+    state.sessionsError = '';
     persistState();
     render();
   }
@@ -496,6 +748,7 @@
   }
 
   function render() {
+    renderSessionPeakTrend();
     const allRoomSeries = buildRoomSeries();
     renderScopeFilters(allRoomSeries);
     const visibleRoomSeries = filterRoomSeries(allRoomSeries);
@@ -1035,6 +1288,7 @@
       ? saved.aggregates.filter((item) => typeof item === 'string') : legacyScopes ?? []);
     state.hidden = new Set(Array.isArray(saved.hidden) ? saved.hidden.filter((item) => typeof item === 'string') : []);
     state.theme = saved.theme === 'light' || saved.theme === 'dark' ? saved.theme : 'system';
+    state.sessionPeakRange = normalizeSessionPeakRange(saved.sessionPeakRange);
     state.height = isFiniteNumber(saved.height) ? clamp(saved.height, 160, 640) : 480;
   }
 
@@ -1050,6 +1304,7 @@
       aggregates: Array.from(state.aggregates),
       hidden: Array.from(state.hidden),
       theme: state.theme,
+      sessionPeakRange: state.sessionPeakRange,
       height: state.height
     }));
   }

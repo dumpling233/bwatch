@@ -137,3 +137,32 @@ test('history session focus drives ordinary filters without retaining a backup s
   assert.doesNotMatch(source, /sessionHiddenBackup/);
   assert.match(styles, /\.legend-list \{ display: flex; flex-wrap: wrap/);
 });
+test('history site mirrors the VS Code session peak trend controls', () => {
+  assert.match(html, /id="sessionPeakTrend"/);
+  assert.match(source, /const SESSION_PEAK_RANGES = \[10, 30, 'all'\]/);
+  assert.match(source, /sessionPeakRange: 30/);
+  assert.match(source, /function normalizeSessionPeakRange/);
+  assert.match(source, /function getVisibleSessionPeakSessions/);
+  assert.match(source, /SESSION_PEAK_CHART_HEIGHT = 180/);
+  assert.match(source, /SESSION_PEAK_CHART_MIN_WIDTH = 360/);
+  assert.match(source, /state\.sessionPeakRange = range/);
+  assert.match(source, /session-peak-point.*selected/);
+  assert.match(source, /峰值在线人数/);
+  assert.match(source, /直播时长/);
+  assert.doesNotMatch(styles, /session-peak-scroll/);
+});
+
+test('history site keeps the newest session peaks and sorts them chronologically', () => {
+  const context = vm.createContext({
+    isFiniteNumber: (value: unknown) => typeof value === 'number' && Number.isFinite(value)
+  });
+  vm.runInContext(extractFunction('normalizeSessionPeakRange', 'getVisibleSessionPeakSessions') + extractFunction('getVisibleSessionPeakSessions', 'renderSessionPeakTrend'), context);
+  const sessions = Array.from({ length: 11 }, (_, index) => ({
+    startMs: (index + 1) * 100,
+    endMs: (index + 1) * 100 + 50
+  })).reverse();
+  const result = JSON.parse(JSON.stringify(vm.runInContext('getVisibleSessionPeakSessions(' + JSON.stringify(sessions) + ', 10)', context)));
+  assert.deepEqual(result.map((session: { startMs: number }) => session.startMs), [200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100]);
+  assert.equal(vm.runInContext("normalizeSessionPeakRange('bad')", context), 30);
+  assert.equal(vm.runInContext("normalizeSessionPeakRange('all')", context), 'all');
+});
