@@ -1735,13 +1735,13 @@ button:hover {
   vector-effect: non-scaling-stroke;
 }
 
-.session-peak-tooltip {
-  pointer-events: none;
-  transform: translate(8px, -100%);
+.session-peak-height-field {
+  padding-top: 1px;
 }
 
-.session-peak-tooltip.align-right {
-  transform: translate(calc(-100% - 8px), -100%);
+.session-peak-tooltip {
+  pointer-events: none;
+  transform: none;
 }
 
 .session-peak-tooltip-row {

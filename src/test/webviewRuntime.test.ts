@@ -63,7 +63,14 @@ test('history trend exposes a cascading room and session filter', () => {
 test('session peak trend sorts sessions, applies range limits, and persists its controls', () => {
   const source = readWebviewSource();
   const css = fs.readFileSync(path.resolve(__dirname, '../../media/webview.css'), 'utf8');
-  const context = vm.createContext({ sessionPeakRange: 30 });
+  const context = vm.createContext({
+    sessionPeakRange: 30,
+    Number,
+    Math,
+    SESSION_PEAK_CHART_DEFAULT_HEIGHT: 180,
+    AGGREGATE_CHART_MIN_HEIGHT: 160,
+    AGGREGATE_CHART_MAX_HEIGHT: 640
+  });
   vm.runInContext(
     `${extractFunction(source, 'normalizeSessionPeakRange', 'getVisibleSessionPeakSessions')}\n`
       + extractFunction(source, 'getVisibleSessionPeakSessions', 'buildHistorySessionPeakTrend'),
@@ -98,18 +105,33 @@ test('session peak trend sorts sessions, applies range limits, and persists its 
       < historySource.indexOf('header.append(scopeField')
   );
   assert.equal(vm.runInContext('normalizeSessionPeakRange(undefined)', context), 30);
-  assert.match(source, /const SESSION_PEAK_CHART_HEIGHT = 180/);
+  vm.runInContext(extractFunction(source, 'clampSessionPeakHeight', 'clampHistoryMinute'), context);
+  assert.equal(vm.runInContext('clampSessionPeakHeight(undefined)', context), 180);
+  assert.equal(vm.runInContext('clampSessionPeakHeight(120)', context), 160);
+  assert.equal(vm.runInContext('clampSessionPeakHeight(720)', context), 640);
+  assert.match(source, /const SESSION_PEAK_CHART_DEFAULT_HEIGHT = 180/);
   assert.match(source, /sessionPeakRange:\s*normalizeSessionPeakRange/);
   assert.match(source, /sessionPeakRange,\s*\n/);
+  assert.match(source, /sessionPeakHeight,\s*\n/);
+  assert.match(source, /sessionPeakHeight:\s*clampSessionPeakHeight/);
   assert.match(source, /hitArea\.addEventListener\('click', \(\) => selectRoomSession\(session\)\)/);
-  assert.match(source, /buildAdaptiveNumberTicks\(\{ min: 0, max: maxPeak \}/);
+  assert.match(source, /buildSessionPeakNumberTicks\(maxPeak, plotHeight\)/);
+  assert.match(source, /Math\.max\(4, Math\.min\(10, Math\.floor\(plotHeight \/ 36\)\)\)/);
+  assert.match(source, /filterAxisTicksBySpacing\(ticks, 0, maxPeak, plotHeight, 24\)/);
   assert.match(css, /\.session-peak-chart\s*\{[^}]*height:\s*180px/s);
   assert.match(css, /\.session-peak-placeholder\s*\{[^}]*height:\s*180px/s);
   assert.match(css, /\.session-peak-chart\s*\{[^}]*min-width:\s*360px[^}]*overflow:\s*hidden/s);
   assert.doesNotMatch(css, /\.session-peak-scroll/);
   assert.doesNotMatch(css, /\.session-peak-chart\s*\{[^}]*overflow-x:\s*auto/s);
   assert.match(source, /observeResponsiveSvg\(chart, SESSION_PEAK_CHART_MIN_WIDTH/);
+  assert.match(source, /chart\.style\.height = `\$\{sessionPeakHeight\}px`/);
+  assert.match(source, /placeholder\.style\.height = `\$\{sessionPeakHeight\}px`/);
+  assert.match(source, /range\.setAttribute\('aria-label', '场次峰值图表高度'\)/);
   assert.match(source, /padding = \{ left: 58, right: 14, top: 18, bottom: 40 \}/);
+  assert.match(source, /tooltip\.offsetWidth \|\| 220/);
+  assert.match(source, /aboveTop >= 8 \? aboveTop/);
+  assert.doesNotMatch(source, /session-peak-tooltip\.align-right|classList\.toggle\('align-right'/);
+  assert.match(css, /\.session-peak-tooltip\s*\{[^}]*transform:\s*none/s);
   assert.match(css, /\.session-peak-range-button\.active\s*\{[^}]*background:\s*var\(--vscode-button-background\)/s);
 });
 
