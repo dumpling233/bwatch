@@ -1,13 +1,21 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { OnlineHistoryStore } from './onlineHistoryStore';
 import { LiveSessionSummary, LiveStatus, MonitorSnapshot, RoomGroup } from './types';
 
-export const HISTORY_SITE_SCHEMA_VERSION = 1 as const;
+export const HISTORY_SITE_SCHEMA_VERSION = 2 as const;
 
-const SITE_DATA_RELATIVE_PATH = path.join('site', 'data', 'v1');
+const SITE_DATA_RELATIVE_PATH = path.join('site', 'data', 'v2');
 
 export type HistorySitePoint = [offsetMs: number, online: number | null];
+
+export interface HistorySiteFileReference {
+  file: string;
+  revision: string;
+  byteCount: number;
+  pointCount: number;
+}
 
 export interface HistorySiteRoomMetadata {
   roomId: string;
@@ -16,7 +24,7 @@ export interface HistorySiteRoomMetadata {
   monitored: boolean;
   latestStatus: LiveStatus | null;
   latestOnline: number | null;
-  sessionFile: string;
+  sessionFile: HistorySiteFileReference;
 }
 
 export interface HistorySiteDateMetadata {
@@ -24,8 +32,9 @@ export interface HistorySiteDateMetadata {
   startMs: number;
   endMs: number;
   roomIds: string[];
+  activeRoomIds: string[];
   pointCount: number;
-  file: string;
+  indexFile: HistorySiteFileReference;
 }
 
 export interface HistorySiteManifest {
@@ -37,11 +46,31 @@ export interface HistorySiteManifest {
   dates: HistorySiteDateMetadata[];
 }
 
-export interface HistorySiteDateFile {
+export interface HistorySiteActiveRoomReference {
+  roomId: string;
+  dataFile: HistorySiteFileReference;
+}
+
+export interface HistorySiteDateIndexFile {
   schemaVersion: typeof HISTORY_SITE_SCHEMA_VERSION;
   date: string;
   startMs: number;
   endMs: number;
+  activeRooms: HistorySiteActiveRoomReference[];
+  idleRoomIds: string[];
+  idleDataFile: HistorySiteFileReference | null;
+}
+
+export interface HistorySiteRoomDateFile {
+  schemaVersion: typeof HISTORY_SITE_SCHEMA_VERSION;
+  date: string;
+  roomId: string;
+  points: HistorySitePoint[];
+}
+
+export interface HistorySiteIdleDateFile {
+  schemaVersion: typeof HISTORY_SITE_SCHEMA_VERSION;
+  date: string;
   rooms: Array<{ roomId: string; points: HistorySitePoint[] }>;
 }
 
@@ -118,51 +147,85 @@ export function exportHistorySiteData(
   const dates: HistorySiteDateMetadata[] = [];
   const anchorNames = new Map<string, string>();
 
+  const writeDataFile = (relativeFile: string, value: unknown, filePointCount: number): HistorySiteFileReference => {
+    const result = writeJsonIfChanged(path.join(outputRoot, relativeFile), value);
+    byteCount += result.byteCount;
+    changedFileCount += Number(result.changed);
+    return {
+      file: relativeFile.replace(/\\/g, '/'),
+      revision: result.revision,
+      byteCount: result.byteCount,
+      pointCount: filePointCount
+    };
+  };
+
   for (const summary of dateSummaries) {
     const query = historyStore.queryDateHistory(summary.date, 0, 23 * 60 + 59, currentNames);
-    const rooms = query.rooms.map((room) => {
+    const activeRooms: HistorySiteActiveRoomReference[] = [];
+    const idleRooms: HistorySiteIdleDateFile['rooms'] = [];
+
+    for (const room of query.rooms) {
       anchorNames.set(room.roomId, room.anchorName);
-      return {
-        roomId: room.roomId,
-        points: room.points.map(
-          ([timestampMs, online]) => [timestampMs - query.startMs, online] as HistorySitePoint
-        )
-      };
-    });
-    const dateFile: HistorySiteDateFile = {
+      const points = room.points.map(
+        ([timestampMs, online]) => [timestampMs - query.startMs, online] as HistorySitePoint
+      );
+      if (points.some((point) => typeof point[1] === 'number' && point[1] > 0)) {
+        const relativeFile = `dates/${summary.date}/active/${room.roomId}.json`;
+        const dataFile: HistorySiteRoomDateFile = {
+          schemaVersion: HISTORY_SITE_SCHEMA_VERSION,
+          date: summary.date,
+          roomId: room.roomId,
+          points
+        };
+        activeRooms.push({
+          roomId: room.roomId,
+          dataFile: writeDataFile(relativeFile, dataFile, points.length)
+        });
+      } else {
+        idleRooms.push({ roomId: room.roomId, points });
+      }
+    }
+
+    const idlePointCount = idleRooms.reduce((total, room) => total + room.points.length, 0);
+    const idleDataFile = idleRooms.length > 0
+      ? writeDataFile(
+        `dates/${summary.date}/idle.json`,
+        { schemaVersion: HISTORY_SITE_SCHEMA_VERSION, date: summary.date, rooms: idleRooms } satisfies HistorySiteIdleDateFile,
+        idlePointCount
+      )
+      : null;
+    const indexFile: HistorySiteDateIndexFile = {
       schemaVersion: HISTORY_SITE_SCHEMA_VERSION,
       date: summary.date,
       startMs: query.startMs,
       endMs: query.endMs,
-      rooms
+      activeRooms,
+      idleRoomIds: idleRooms.map((room) => room.roomId),
+      idleDataFile
     };
-    const relativeFile = `dates/${summary.date}.json`;
-    const writeResult = writeJsonIfChanged(path.join(outputRoot, relativeFile), dateFile);
-    byteCount += writeResult.byteCount;
-    changedFileCount += Number(writeResult.changed);
+    const indexReference = writeDataFile(`dates/${summary.date}/index.json`, indexFile, summary.pointCount);
     pointCount += summary.pointCount;
     dates.push({
       date: summary.date,
       startMs: query.startMs,
       endMs: query.endMs,
       roomIds: summary.roomIds,
+      activeRoomIds: activeRooms.map((room) => room.roomId),
       pointCount: summary.pointCount,
-      file: relativeFile
+      indexFile: indexReference
     });
   }
 
   const rooms: HistorySiteRoomMetadata[] = [];
   for (const [order, roomId] of orderedRoomIds.entries()) {
     const snapshotRoom = snapshotRooms.get(roomId);
+    const sessions = historyStore.getRoomSessions(roomId);
     const sessionsFile: HistorySiteSessionsFile = {
       schemaVersion: HISTORY_SITE_SCHEMA_VERSION,
       roomId,
-      sessions: historyStore.getRoomSessions(roomId)
+      sessions
     };
-    const relativeFile = `sessions/${roomId}.json`;
-    const writeResult = writeJsonIfChanged(path.join(outputRoot, relativeFile), sessionsFile);
-    byteCount += writeResult.byteCount;
-    changedFileCount += Number(writeResult.changed);
+    const sessionFile = writeDataFile(`sessions/${roomId}.json`, sessionsFile, sessions.length);
     rooms.push({
       roomId,
       anchorName: (anchorNames.get(roomId) ?? snapshotRoom?.anchorName?.trim()) || roomId,
@@ -170,7 +233,7 @@ export function exportHistorySiteData(
       monitored: snapshot.settings.rooms.includes(roomId),
       latestStatus: snapshotRoom?.status ?? null,
       latestOnline: snapshotRoom?.online ?? null,
-      sessionFile: relativeFile
+      sessionFile
     });
   }
 
@@ -201,12 +264,16 @@ export function exportHistorySiteData(
   };
 }
 
-function writeJsonIfChanged(filePath: string, value: unknown): { changed: boolean; byteCount: number } {
+function writeJsonIfChanged(
+  filePath: string,
+  value: unknown
+): { changed: boolean; byteCount: number; revision: string } {
   const content = `${JSON.stringify(value)}\n`;
   const byteCount = Buffer.byteLength(content, 'utf8');
+  const revision = crypto.createHash('sha256').update(content).digest('hex');
   try {
     if (fs.readFileSync(filePath, 'utf8') === content) {
-      return { changed: false, byteCount };
+      return { changed: false, byteCount, revision };
     }
   } catch {
     // Missing files are created below.
@@ -216,7 +283,7 @@ function writeJsonIfChanged(filePath: string, value: unknown): { changed: boolea
   const tempPath = `${filePath}.tmp`;
   fs.writeFileSync(tempPath, content, 'utf8');
   fs.renameSync(tempPath, filePath);
-  return { changed: true, byteCount };
+  return { changed: true, byteCount, revision };
 }
 
 function normalizeTimestamp(value: unknown): number | null {

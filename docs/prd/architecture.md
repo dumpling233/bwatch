@@ -4,7 +4,7 @@
 
 - 前端/UI：VSCode `WebviewViewProvider` 在 Activity Bar 提供直播监控和实时弹幕两个独立侧边栏 View，静态资源位于 `media/`；`site/` 提供无构建依赖的浏览器历史走势工作台。Webview 使用 `getState` / `setState`，静态页面使用 `localStorage` 保存纯 UI 控制状态。
 - 扩展宿主：TypeScript VSCode 扩展，入口为 `src/extension.ts`，编译输出到 `out/`。
-- 数据层：不使用数据库；监控房间号、自定义分组和刷新/提醒配置存储在 VSCode 用户设置中，在线人数历史按房间长期保存到 VSCode 扩展本地存储目录；用户主动导出后，公开静态副本写入 `site/data/v1/`。
+- 数据层：不使用数据库；监控房间号、自定义分组和刷新/提醒配置存储在 VSCode 用户设置中，在线人数历史按房间长期保存到 VSCode 扩展本地存储目录；用户主动导出后，公开静态副本按日期索引、活跃房间分片和闲置房间合并文件写入 `site/data/v2/`。
 - 外部服务：通过 B站直播房间基础信息接口 `xlive/web-room/v1/index/getRoomBaseInfo` 获取房间标题、主播名、开播状态、人气和开播时间；通过 `x/relation/stat?vmid={uid}` 获取主播粉丝数；直播中房间再通过 `xlive/general-interface/v1/rank/getOnlineGoldRank` 获取直播页同款在线观众人数；主播名模糊搜索通过 `x/web-interface/search/type?search_type=live_user` 获取候选直播间；实时弹幕机通过 `room/v1/Room/get_info`、`x/web-interface/nav` 和带 WBI 签名的 `xlive/web-room/v1/index/getDanmuInfo` 获取真实房间号、签名密钥、token 和 WebSocket 服务器，再连接 B站直播弹幕服务器。HTTP 请求经过统一网络适配层，WebSocket 按相同代理配置尝试 HTTP/HTTPS 代理候选。
 - 部署方式：核心产品作为 VSCode 扩展运行；`site/` 由默认分支 push 或手动工作流通过官方 GitHub Pages Actions 发布。
 
@@ -72,10 +72,11 @@
 
 1. 用户运行 `bwatch.exportHistorySiteData`；扩展从本机 `globalState` 读取上次仓库路径，首次或路径失效时通过目录选择器获取仓库根目录。
 2. `historySiteExport.ts` 使用 `OnlineHistoryStore.getAvailableDates()`、`queryDateHistory()` 和 `getRoomSessions()` 读取全部长期历史，不改变本地文件格式或查询行为。
-3. 导出器把毫秒时间戳转为相对当天起点偏移，按自然日写入 `dates/`，按房间写入 `sessions/`，最后写入 Manifest；内容相同不重写，所有更新先写 `.tmp` 再 rename。
+3. 导出器把毫秒时间戳转为相对当天起点偏移；当天有正数采样的房间写入独立 `active/{roomId}.json`，其余房间合并写入 `idle.json`，并生成日期索引和场次文件。引用记录 SHA-256、字节数和点数，内容相同不重写，所有更新先写 `.tmp` 再 rename，Manifest 最后更新。
 4. 用户手动提交并推送；Pages 工作流先运行 `scripts/validate-history-site.mjs`，再上传整个 `site/` 并部署。工作流通过仓库默认分支元数据判断是否发布。
-5. 浏览器以 `cache: no-store` 读取 Manifest，以 `generatedAt` 查询参数读取日期和场次文件；所有自然日标签使用导出时区，避免浏览器本地时区改变边界。
-6. 静态页面只读公开数据。命令不导出 Cookie、Token、代理配置或其他 VSCode 状态，也不执行 Git 命令。
+5. 浏览器以 `cache: no-store` 读取 Manifest，并行读取所选日期索引，再按筛选、合计和图例显隐使用最多 8 路并发补载房间文件；文件失败重试一次，过期加载由 `AbortController` 取消，缓存键由文件路径和内容版本组成。
+6. 浏览器用二分查找截取原始范围；合计、纵轴、峰值和悬浮使用原始点，SVG 路径按像素桶保留首尾、峰谷和断线边界。所有自然日标签使用导出时区，避免浏览器本地时区改变边界。
+7. 静态页面只读公开数据。命令不导出 Cookie、Token、代理配置或其他 VSCode 状态，也不执行 Git 命令。
 
 ## 刷新数据获取策略
 

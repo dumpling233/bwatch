@@ -6,7 +6,7 @@
 
 - [直播监控扩展](live-monitor.md)：VSCode 侧边栏、直播间配置、B站接口拉取、自动刷新、开播提醒、在线人数历史走势、单主播场次分析和外部打开。
 - [实时弹幕机](danmaku-viewer.md)：独立的 B站直播间实时弹幕与 Super Chat View，负责匿名 WBI 初始化、WebSocket 长连接、心跳、解压、重连和双列表交互。
-- [远程历史走势页面](history-site.md)：插件手动导出全部长期历史、版本化静态数据、浏览器历史走势工作台和 GitHub Pages 部署。
+- [远程历史走势页面](history-site.md)：插件手动导出全部长期历史、v2 日期/主播按需分片、浏览器历史走势工作台和 GitHub Pages 部署。
 - [PRD Keeper 治理](prd-keeper.md)：`.agent/skills/prd-keeper/`、`AGENTS.md`、`CODEX.md`、`CLAUDE.md` 和 `docs/prd/`，定义 AI 开发与 PRD 维护流程。
 
 ## 待补充模块

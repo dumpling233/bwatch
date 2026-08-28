@@ -83,8 +83,8 @@ test('history site declares cache, persistence, dual-day, and failure states', (
   assert.match(source, /cache: 'no-store'/);
   assert.match(source, /localStorage\.setItem/);
   assert.match(source, /midnight-line/);
-  assert.match(source, /schemaVersion 1/);
-  assert.match(source, /数据文件请求失败/);
+  assert.match(source, /schemaVersion 2/);
+  assert.match(source, /reference\.revision/);
   assert.match(source, /场次文件结构不兼容/);
   assert.doesNotMatch(source, /Math\.max\(\.\.\./);
 });
@@ -109,9 +109,9 @@ test('history site mirrors the plugin range, aggregate, date, and session contro
   assert.match(html, /id="heightRange"/);
   assert.ok(html.indexOf('id="chartFrame"') < html.indexOf('id="legend"'));
 
-  assert.match(source, /filters: new Set\(\['all'\]\)/);
+  assert.match(source, /filters: new Set\(\['withData'\]\)/);
   assert.match(source, /aggregates: new Set\(\)/);
-  assert.match(source, /legacyScopes \?\? \['all'\]/);
+  assert.match(source, /legacyScopes \?\? \['withData'\]/);
   assert.match(source, /legacyScopes \?\? \[\]/);
   assert.match(source, /className = 'aggregate-scope-button'/);
   assert.match(source, /state\.filters\.has\(scope\.id\)/);
@@ -165,4 +165,51 @@ test('history site keeps the newest session peaks and sorts them chronologically
   assert.deepEqual(result.map((session: { startMs: number }) => session.startMs), [200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100]);
   assert.equal(vm.runInContext("normalizeSessionPeakRange('bad')", context), 30);
   assert.equal(vm.runInContext("normalizeSessionPeakRange('all')", context), 'all');
+});
+
+test('history site limits room requests to eight concurrent tasks', async () => {
+  const context = vm.createContext({ Promise });
+  vm.runInContext('async ' + extractFunction('runWithConcurrency', 'isAbortError'), context);
+  let active = 0;
+  let maximum = 0;
+  const tasks = Array.from({ length: 24 }, () => async () => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setImmediate(resolve));
+    active -= 1;
+  });
+  context.tasks = tasks;
+  await vm.runInContext('runWithConcurrency(tasks, 8, () => {})', context);
+  assert.equal(maximum, 8);
+  assert.match(source, /const MAX_CONCURRENT_REQUESTS = 8/);
+});
+
+test('history site downsampling preserves endpoints, extrema, and disconnect boundaries', () => {
+  const context = vm.createContext({
+    isFiniteNumber: (value: unknown) => typeof value === 'number' && Number.isFinite(value),
+    clamp: (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value))
+  });
+  vm.runInContext(extractFunction('downsamplePoints', 'showTooltip'), context);
+  const points: Array<[number, number | null]> = Array.from(
+    { length: 1000 },
+    (_, index) => [index, index === 537 ? 9999 : index % 17] as [number, number]
+  );
+  points.splice(600, 0, [600, null]);
+  context.points = points;
+  const result = JSON.parse(JSON.stringify(vm.runInContext('downsamplePoints(points, 0, 999, 50)', context))) as Array<[number, number | null]>;
+  assert.deepEqual(result[0], [0, 0]);
+  assert.deepEqual(result.at(-1), [999, 13]);
+  assert.ok(result.some((point) => point[0] === 537 && point[1] === 9999));
+  assert.ok(result.some((point) => point[1] === null));
+  assert.ok(result.length <= 50 * 4 + 1);
+});
+
+test('history site v2 uses indexed active rooms first and upgrades v1 filters', () => {
+  assert.match(source, /const LEGACY_STORAGE_KEY = 'bwatch\.historySite\.state\.v1'/);
+  assert.match(source, /legacy \? \['withData'\]/);
+  assert.match(source, /file\.idleRoomIds\.some\(\(roomId\) => requiredRoomIds\.has\(roomId\)/);
+  assert.match(source, /new AbortController\(\)/);
+  assert.match(source, /state\.loadController\?\.abort\(\)/);
+  assert.match(source, /state\.fileCache\.has\(cacheKey\)/);
+  assert.match(source, /Promise\.all\(metadata\.map/);
 });

@@ -1,8 +1,11 @@
 (() => {
   'use strict';
 
-  const SCHEMA_VERSION = 1;
-  const STORAGE_KEY = 'bwatch.historySite.state.v1';
+  const SCHEMA_VERSION = 2;
+  const DATA_ROOT = './data/v2/';
+  const STORAGE_KEY = 'bwatch.historySite.state.v2';
+  const LEGACY_STORAGE_KEY = 'bwatch.historySite.state.v1';
+  const MAX_CONCURRENT_REQUESTS = 8;
   const PALETTE = [
     '#3B82F6', '#22C55E', '#EAB308', '#EF4444', '#A855F7', '#F97316',
     '#06B6D4', '#EC4899', '#84CC16', '#14B8A6', '#8B5CF6', '#F43F5E',
@@ -33,13 +36,17 @@
     endMinute: 1439,
     roomId: '',
     sessionId: '',
-    filters: new Set(['all']),
+    filters: new Set(['withData']),
     aggregates: new Set(),
     hidden: new Set(),
     theme: 'system',
     height: 480,
     series: [],
-    loadingToken: 0
+    renderFrame: 0,
+    loadingToken: 0,
+    loadController: null,
+    fileCache: new Map(),
+    rangeCache: new WeakMap()
   };
 
   init();
@@ -50,7 +57,7 @@
     applyTheme();
     setLoading(true);
     try {
-      const response = await fetch('./data/v1/manifest.json', { cache: 'no-store' });
+      const response = await fetch(`${DATA_ROOT}manifest.json`, { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`Manifest 请求失败（HTTP ${response.status}）`);
       }
@@ -126,11 +133,14 @@
     refs.showAll.addEventListener('click', () => {
       state.hidden.clear();
       persistState();
-      render();
+      void refreshRequiredData();
     });
     refs.chart.addEventListener('pointermove', showTooltip);
     refs.chart.addEventListener('pointerleave', hideTooltip);
-    window.addEventListener('resize', debounce(render, 80));
+    window.addEventListener('resize', debounce(() => {
+      renderSessionPeakTrend();
+      renderChart();
+    }, 80));
   }
 
   function validateManifest(value) {
@@ -138,13 +148,24 @@
       throw new Error('Manifest 内容损坏。');
     }
     if (value.schemaVersion !== SCHEMA_VERSION) {
-      throw new Error(`不支持的数据版本：${String(value.schemaVersion)}。页面仅接受 schemaVersion 1。`);
+      throw new Error(`不支持的数据版本：${String(value.schemaVersion)}。页面仅接受 schemaVersion 2。`);
     }
     if (!Array.isArray(value.rooms) || !Array.isArray(value.groups) || !Array.isArray(value.dates)) {
       throw new Error('Manifest 缺少房间、分组或日期索引。');
     }
+    value.rooms.forEach((room) => validateFileReference(room.sessionFile));
+    value.dates.forEach((date) => validateFileReference(date.indexFile));
     value.dates.sort((left, right) => left.date.localeCompare(right.date));
     value.rooms.sort((left, right) => left.order - right.order || compareRoomIds(left.roomId, right.roomId));
+  }
+
+  function validateFileReference(reference) {
+    if (!reference || typeof reference.file !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(reference.revision) ||
+      !Number.isInteger(reference.byteCount) || reference.byteCount <= 0 ||
+      !Number.isInteger(reference.pointCount) || reference.pointCount < 0) {
+      throw new Error('Manifest 文件索引损坏。');
+    }
   }
 
   function populateControls() {
@@ -218,10 +239,8 @@
     const validIds = new Set(scopes.map((scope) => scope.id));
     state.filters = new Set(Array.from(state.filters).filter((scope) => validIds.has(scope)));
     state.aggregates = new Set(Array.from(state.aggregates).filter((scope) => validIds.has(scope)));
-    const dataRoomIds = new Set(roomSeries.map((series) => series.roomId));
-    const positiveRoomIds = new Set(roomSeries
-      .filter((series) => series.points.some((point) => isFiniteNumber(point[1]) && point[1] > 0))
-      .map((series) => series.roomId));
+    const dataRoomIds = getIndexedRoomIds();
+    const positiveRoomIds = getIndexedActiveRoomIds();
     refs.scopeFilters.replaceChildren(...scopes.map((scope) => {
       const control = document.createElement('div');
       control.className = 'scope-control';
@@ -243,7 +262,7 @@
           state.filters.add(scope.id);
         }
         persistState();
-        render();
+        void refreshRequiredData();
       });
       const aggregateButton = document.createElement('button');
       aggregateButton.type = 'button';
@@ -260,7 +279,7 @@
           state.aggregates.add(scope.id);
         }
         persistState();
-        render();
+        void refreshRequiredData();
       });
       control.append(button, aggregateButton);
       return control;
@@ -317,6 +336,9 @@
       return;
     }
     const token = ++state.loadingToken;
+    state.loadController?.abort();
+    const controller = new AbortController();
+    state.loadController = controller;
     setLoading(true);
     hideNotice();
     const dates = getSelectedDates();
@@ -326,27 +348,30 @@
         throw new Error('选择的日期不在 Manifest 索引中。');
       }
       const files = await Promise.all(metadata.map(async (item) => {
-        const join = item.file.includes('?') ? '&' : '?';
-        const response = await fetch(`./data/v1/${item.file}${join}v=${encodeURIComponent(state.manifest.generatedAt)}`, { cache: 'default' });
-        if (!response.ok) {
-          throw new Error(`${item.date} 数据文件请求失败（HTTP ${response.status}）`);
+        const value = await fetchReferencedJson(item.indexFile, controller.signal);
+        if (value.schemaVersion !== SCHEMA_VERSION || value.date !== item.date ||
+          !Array.isArray(value.activeRooms) || !Array.isArray(value.idleRoomIds)) {
+          throw new Error(`${item.date} 日期索引结构不兼容。`);
         }
-        const value = await response.json();
-        if (value.schemaVersion !== SCHEMA_VERSION || value.date !== item.date || !Array.isArray(value.rooms)) {
-          throw new Error(`${item.date} 数据文件结构不兼容。`);
-        }
-        return value;
+        value.activeRooms.forEach((room) => validateFileReference(room.dataFile));
+        if (value.idleDataFile) validateFileReference(value.idleDataFile);
+        return { ...value, rooms: [] };
       }));
       if (token !== state.loadingToken) {
         return;
       }
       state.dateFiles = files;
       normalizeRange();
-      await populateSessions();
+      await Promise.all([
+        loadRequiredRoomData(token, controller.signal),
+        populateSessions(controller.signal)
+      ]);
+      if (token !== state.loadingToken) return;
       setLoading(false);
       persistState();
       render();
     } catch (error) {
+      if (isAbortError(error)) return;
       if (token !== state.loadingToken) {
         return;
       }
@@ -357,7 +382,144 @@
     }
   }
 
-  async function populateSessions() {
+  async function refreshRequiredData() {
+    if (state.dateFiles.length === 0) return;
+    const token = ++state.loadingToken;
+    state.loadController?.abort();
+    const controller = new AbortController();
+    state.loadController = controller;
+    setLoading(true);
+    hideNotice();
+    try {
+      await loadRequiredRoomData(token, controller.signal);
+      if (token !== state.loadingToken) return;
+      setLoading(false);
+      persistState();
+      render();
+    } catch (error) {
+      if (isAbortError(error) || token !== state.loadingToken) return;
+      setLoading(false);
+      showNotice(error instanceof Error ? error.message : '主播数据加载失败。', true);
+      render();
+    }
+  }
+
+  async function loadRequiredRoomData(token, signal) {
+    const requiredRoomIds = getRequiredRoomIds();
+    const loadedByDate = new Map(state.dateFiles.map((file) => [file.date, [...file.rooms]]));
+    const tasks = [];
+
+    for (const file of state.dateFiles) {
+      const loadedRoomIds = new Set(file.rooms.map((room) => room.roomId));
+      const activeByRoom = new Map(file.activeRooms.map((room) => [room.roomId, room.dataFile]));
+      for (const roomId of requiredRoomIds) {
+        const reference = activeByRoom.get(roomId);
+        if (!reference || loadedRoomIds.has(roomId)) continue;
+        tasks.push(async () => {
+          const value = await fetchReferencedJson(reference, signal);
+          if (value.schemaVersion !== SCHEMA_VERSION || value.date !== file.date ||
+            value.roomId !== roomId || !Array.isArray(value.points)) {
+            throw new Error(`${file.date}/${roomId} 主播数据结构不兼容。`);
+          }
+          loadedByDate.get(file.date).push({ roomId, points: value.points });
+        });
+      }
+
+      const needsIdle = file.idleRoomIds.some((roomId) => requiredRoomIds.has(roomId) && !loadedRoomIds.has(roomId));
+      if (needsIdle && file.idleDataFile) {
+        tasks.push(async () => {
+          const value = await fetchReferencedJson(file.idleDataFile, signal);
+          if (value.schemaVersion !== SCHEMA_VERSION || value.date !== file.date || !Array.isArray(value.rooms)) {
+            throw new Error(`${file.date} 闲置主播数据结构不兼容。`);
+          }
+          for (const room of value.rooms) {
+            if (requiredRoomIds.has(room.roomId) && !loadedRoomIds.has(room.roomId) && Array.isArray(room.points)) {
+              loadedByDate.get(file.date).push({ roomId: room.roomId, points: room.points });
+            }
+          }
+        });
+      }
+    }
+
+    let completed = 0;
+    setLoadingProgress(completed, tasks.length);
+    await runWithConcurrency(tasks, MAX_CONCURRENT_REQUESTS, () => {
+      completed += 1;
+      setLoadingProgress(completed, tasks.length);
+    });
+    if (token !== state.loadingToken) return;
+    state.dateFiles = state.dateFiles.map((file) => ({
+      ...file,
+      rooms: loadedByDate.get(file.date).sort((left, right) => compareRoomIds(left.roomId, right.roomId))
+    }));
+  }
+
+  function getRequiredRoomIds() {
+    const dataRoomIds = getIndexedRoomIds();
+    const positiveRoomIds = getIndexedActiveRoomIds();
+    const required = new Set();
+    for (const scope of state.filters) {
+      for (const roomId of getScopeRoomIds(scope, dataRoomIds, positiveRoomIds)) {
+        if (!state.hidden.has(`room:${roomId}`)) required.add(roomId);
+      }
+    }
+    for (const scope of state.aggregates) {
+      if (state.hidden.has(`sum:${scope}`)) continue;
+      getScopeRoomIds(scope, dataRoomIds, positiveRoomIds).forEach((roomId) => required.add(roomId));
+    }
+    return required;
+  }
+
+  function getIndexedRoomIds() {
+    return new Set(state.dateFiles.flatMap((file) => [
+      ...file.activeRooms.map((room) => room.roomId),
+      ...file.idleRoomIds
+    ]));
+  }
+
+  function getIndexedActiveRoomIds() {
+    return new Set(state.dateFiles.flatMap((file) => file.activeRooms.map((room) => room.roomId)));
+  }
+
+  async function fetchReferencedJson(reference, signal) {
+    validateFileReference(reference);
+    const cacheKey = `${reference.file}@${reference.revision}`;
+    if (state.fileCache.has(cacheKey)) return state.fileCache.get(cacheKey);
+    const url = `${DATA_ROOT}${reference.file}?v=${encodeURIComponent(reference.revision)}`;
+    let lastError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await fetch(url, { cache: 'default', signal });
+        if (!response.ok) throw new Error(`${reference.file} 请求失败（HTTP ${response.status}）`);
+        const value = await response.json();
+        state.fileCache.set(cacheKey, value);
+        return value;
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError;
+  }
+
+  async function runWithConcurrency(tasks, limit, onComplete) {
+    let nextIndex = 0;
+    async function worker() {
+      while (nextIndex < tasks.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await tasks[index]();
+        onComplete();
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
+  }
+
+  function isAbortError(error) {
+    return Boolean(error && typeof error === 'object' && error.name === 'AbortError');
+  }
+
+  async function populateSessions(signal) {
     state.sessions = [];
     state.sessionsLoading = Boolean(state.roomId);
     state.sessionsLoaded = false;
@@ -380,11 +542,7 @@
       return;
     }
     try {
-      const response = await fetch(`./data/v1/${room.sessionFile}?v=${encodeURIComponent(state.manifest.generatedAt)}`);
-      if (!response.ok) {
-        throw new Error(`场次文件请求失败（HTTP ${response.status}）`);
-      }
-      const value = await response.json();
+      const value = await fetchReferencedJson(room.sessionFile, signal);
       if (value.schemaVersion !== SCHEMA_VERSION || value.roomId !== room.roomId || !Array.isArray(value.sessions)) {
         throw new Error('场次文件结构不兼容。');
       }
@@ -406,6 +564,7 @@
         state.sessionId = '';
       }
     } catch (error) {
+      if (isAbortError(error)) throw error;
       refs.sessionSelect.replaceChildren(option('', '场次读取失败'));
       refs.sessionSelect.disabled = true;
       showNotice(error instanceof Error ? error.message : '场次数据加载失败。', true);
@@ -716,7 +875,15 @@
     refs.rangeEnd.value = String(state.endMinute);
     updateRangePresentation();
     persistState();
-    render();
+    scheduleRender();
+  }
+
+  function scheduleRender() {
+    if (state.renderFrame) cancelAnimationFrame(state.renderFrame);
+    state.renderFrame = requestAnimationFrame(() => {
+      state.renderFrame = 0;
+      render();
+    });
   }
 
   function resetRange() {
@@ -771,15 +938,16 @@
     for (const file of state.dateFiles) {
       for (const room of file.rooms) {
         const points = roomPoints.get(room.roomId) || [];
-        for (const point of room.points) {
+        for (const point of slicePointsByRange(room.points, startMs - file.startMs, endMs - file.startMs)) {
           const timestamp = file.startMs + point[0];
-          if (timestamp >= startMs && timestamp <= endMs && (point[1] === null || isFiniteNumber(point[1]))) {
+          if (point[1] === null || isFiniteNumber(point[1])) {
             points.push([timestamp, point[1]]);
           }
         }
         roomPoints.set(room.roomId, points);
       }
     }
+    const indexedRoomIds = getIndexedRoomIds();
     return state.manifest.rooms
       .map((room, index) => ({
         id: `room:${room.roomId}`,
@@ -790,15 +958,42 @@
         points: (roomPoints.get(room.roomId) || []).sort((left, right) => left[0] - right[0]),
         aggregate: false
       }))
-      .filter((series) => series.points.length > 0);
+      .filter((series) => indexedRoomIds.has(series.roomId));
+  }
+
+  function slicePointsByRange(points, startOffset, endOffset) {
+    if (!Array.isArray(points) || points.length === 0) return [];
+    let ranges = state.rangeCache.get(points);
+    if (!ranges) {
+      ranges = new Map();
+      state.rangeCache.set(points, ranges);
+    }
+    const cacheKey = `${startOffset}:${endOffset}`;
+    if (ranges.has(cacheKey)) return ranges.get(cacheKey);
+
+    let low = 0;
+    let high = points.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (points[middle][0] < startOffset) low = middle + 1;
+      else high = middle;
+    }
+    const startIndex = low;
+    high = points.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (points[middle][0] <= endOffset) low = middle + 1;
+      else high = middle;
+    }
+    const result = points.slice(startIndex, low);
+    if (ranges.size >= 24) ranges.delete(ranges.keys().next().value);
+    ranges.set(cacheKey, result);
+    return result;
   }
 
   function filterRoomSeries(roomSeries) {
-    const dataRoomIds = new Set(roomSeries.map((series) => series.roomId));
-    const positiveRoomIds = new Set(
-      roomSeries.filter((series) => series.points.some((point) => isFiniteNumber(point[1]) && point[1] > 0))
-        .map((series) => series.roomId)
-    );
+    const dataRoomIds = getIndexedRoomIds();
+    const positiveRoomIds = getIndexedActiveRoomIds();
     const allowedRoomIds = new Set();
     for (const scope of state.filters) {
       getScopeRoomIds(scope, dataRoomIds, positiveRoomIds).forEach((roomId) => allowedRoomIds.add(roomId));
@@ -810,11 +1005,8 @@
     if (state.aggregates.size === 0) {
       return [];
     }
-    const dataRoomIds = new Set(roomSeries.map((series) => series.roomId));
-    const positiveRoomIds = new Set(
-      roomSeries.filter((series) => series.points.some((point) => isFiniteNumber(point[1]) && point[1] > 0))
-        .map((series) => series.roomId)
-    );
+    const dataRoomIds = getIndexedRoomIds();
+    const positiveRoomIds = getIndexedActiveRoomIds();
     return Array.from(state.aggregates).map((scope) => {
       const roomIds = getScopeRoomIds(scope, dataRoomIds, positiveRoomIds);
       const members = roomSeries.filter((series) => roomIds.has(series.roomId));
@@ -908,10 +1100,12 @@
       meta.textContent = latestPoint ? formatNumber(latestPoint[1]) : '--';
       button.append(swatch, name, meta);
       button.addEventListener('click', () => {
-        if (state.hidden.has(series.id)) state.hidden.delete(series.id);
+        const showing = state.hidden.has(series.id);
+        if (showing) state.hidden.delete(series.id);
         else state.hidden.add(series.id);
         persistState();
-        render();
+        if (showing) void refreshRequiredData();
+        else render();
       });
       return button;
     }));
@@ -926,9 +1120,14 @@
     svg.replaceChildren();
     const visible = state.series.filter((series) => !state.hidden.has(series.id));
     const plottableSeries = visible.filter((series) => series.points.some((point) => isFiniteNumber(point[1])));
-    const numericPoints = plottableSeries.flatMap((series) => series.points.filter((point) => isFiniteNumber(point[1])));
-    refs.chartEmpty.hidden = numericPoints.length > 0;
-    if (numericPoints.length === 0 || state.dateFiles.length === 0) {
+    const numericValues = [];
+    for (const series of plottableSeries) {
+      for (const point of series.points) {
+        if (isFiniteNumber(point[1])) numericValues.push(point[1]);
+      }
+    }
+    refs.chartEmpty.hidden = numericValues.length > 0;
+    if (numericValues.length === 0 || state.dateFiles.length === 0) {
       svg.dataset.chart = '';
       hideTooltip();
       return;
@@ -937,7 +1136,7 @@
     const startMs = state.dateFiles[0].startMs + state.startMinute * 60_000;
     const endMs = state.dateFiles[0].startMs + state.endMinute * 60_000 + 59_999;
     const plotHeight = height - fixedMargin.top - fixedMargin.bottom;
-    const yScale = buildYAxisScale(numericPoints.map((point) => point[1]), plotHeight);
+    const yScale = buildYAxisScale(numericValues, plotHeight);
     const longestYLabel = yScale.ticks.reduce((length, value) => Math.max(length, formatNumber(value).length), 1);
     const margin = {
       ...fixedMargin,
@@ -980,7 +1179,8 @@
 
     for (const series of plottableSeries) {
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('d', buildPath(series.points, scaleX, scaleY));
+      const displayPoints = downsamplePoints(series.points, startMs, endMs, plot.width);
+      path.setAttribute('d', buildPath(displayPoints, scaleX, scaleY));
       path.setAttribute('stroke', series.color);
       path.setAttribute('class', `series-path${series.aggregate ? ' aggregate' : ''}`);
       path.dataset.seriesId = series.id;
@@ -1006,6 +1206,43 @@
       drawing = true;
     }
     return path;
+  }
+
+  function downsamplePoints(points, startMs, endMs, pixelWidth) {
+    const bucketCount = Math.max(1, Math.floor(pixelWidth / 2));
+    if (points.length <= bucketCount) return points;
+    const result = [];
+    let bucket = null;
+
+    const flush = () => {
+      if (!bucket) return;
+      const selected = [bucket.first, bucket.min, bucket.max, bucket.last]
+        .sort((left, right) => left.index - right.index)
+        .filter((item, index, values) => index === 0 || item.index !== values[index - 1].index);
+      selected.forEach((item) => result.push(item.point));
+      bucket = null;
+    };
+
+    points.forEach((point, index) => {
+      if (!isFiniteNumber(point[1])) {
+        flush();
+        if (result.length === 0 || result[result.length - 1][1] !== null) result.push(point);
+        return;
+      }
+      const bucketIndex = clamp(Math.floor((point[0] - startMs) / Math.max(1, endMs - startMs) * bucketCount), 0, bucketCount - 1);
+      if (!bucket || bucket.index !== bucketIndex) {
+        flush();
+        const entry = { index, point };
+        bucket = { index: bucketIndex, first: entry, last: entry, min: entry, max: entry };
+        return;
+      }
+      const entry = { index, point };
+      bucket.last = entry;
+      if (point[1] < bucket.min.point[1]) bucket.min = entry;
+      if (point[1] > bucket.max.point[1]) bucket.max = entry;
+    });
+    flush();
+    return result;
   }
 
   function showTooltip(event) {
@@ -1087,6 +1324,14 @@
     } else {
       refs.chartEmpty.textContent = '暂无可显示的数据';
     }
+  }
+
+  function setLoadingProgress(completed, total) {
+    if (total <= 0) {
+      refs.chartEmpty.textContent = '正在整理历史数据...';
+      return;
+    }
+    refs.chartEmpty.textContent = `正在加载主播数据 ${completed}/${total}...`;
   }
 
   function showNotice(message, error) {
@@ -1272,7 +1517,9 @@
   }
 
   function restoreState() {
-    const saved = safeJson(localStorage.getItem(STORAGE_KEY), {});
+    const current = safeJson(localStorage.getItem(STORAGE_KEY), null);
+    const legacy = current ? null : safeJson(localStorage.getItem(LEGACY_STORAGE_KEY), null);
+    const saved = current || legacy || {};
     state.selectedDate = typeof saved.selectedDate === 'string' ? saved.selectedDate : '';
     state.twoDays = Boolean(saved.twoDays);
     state.startMinute = isFiniteNumber(saved.startMinute) ? saved.startMinute : 0;
@@ -1282,8 +1529,8 @@
     const legacyScopes = Array.isArray(saved.scopes)
       ? saved.scopes.filter((item) => typeof item === 'string')
       : null;
-    state.filters = new Set(Array.isArray(saved.filters)
-      ? saved.filters.filter((item) => typeof item === 'string') : legacyScopes ?? ['all']);
+    state.filters = new Set(legacy ? ['withData'] : Array.isArray(saved.filters)
+      ? saved.filters.filter((item) => typeof item === 'string') : legacyScopes ?? ['withData']);
     state.aggregates = new Set(Array.isArray(saved.aggregates)
       ? saved.aggregates.filter((item) => typeof item === 'string') : legacyScopes ?? []);
     state.hidden = new Set(Array.isArray(saved.hidden) ? saved.hidden.filter((item) => typeof item === 'string') : []);

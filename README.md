@@ -52,7 +52,7 @@ BWatch is a VSCode extension that monitors multiple Bilibili live rooms in the s
 
 在 VSCode 命令面板运行 `BWatch: 导出历史网页数据`。首次运行选择当前 `bwatch` 仓库根目录，后续会直接复用本机路径；如果目录失效，命令会要求重新选择。
 
-导出会把全部长期历史写入 `site/data/v1/`，包括已移出监控列表但仍有历史的房间。原始毫秒时间戳、15 秒采样和 `null` 断线语义均保留。命令只写静态数据，不会执行 `git add`、`commit` 或 `push`。
+导出会把全部长期历史写入 `site/data/v2/`，包括已移出监控列表但仍有历史的房间。数据按日期索引拆分为活跃主播独立文件和闲置主播合并文件，页面根据筛选最多 8 路并发按需读取；原始毫秒时间戳、15 秒采样和 `null` 断线语义均保留。命令只写静态数据，不会执行 `git add`、`commit` 或 `push`。
 
 日常更新流程：
 

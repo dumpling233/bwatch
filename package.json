@@ -186,6 +186,7 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
+    "migrate:history-site-v2": "node scripts/migrate-history-site-v2.mjs site",
     "validate:history-site": "node scripts/validate-history-site.mjs site",
     "test": "npm run compile && node --test out/test/**/*.test.js",
     "probe:danmaku": "npm run compile && node out/test/danmakuLiveProbe.js",

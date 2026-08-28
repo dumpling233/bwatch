@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { exportHistorySiteData, HistorySiteDateFile, HistorySiteManifest, HistorySiteSessionsFile } from '../historySiteExport';
+import {
+  exportHistorySiteData,
+  HistorySiteDateIndexFile,
+  HistorySiteIdleDateFile,
+  HistorySiteManifest,
+  HistorySiteRoomDateFile,
+  HistorySiteSessionsFile
+} from '../historySiteExport';
 import { MementoLike, OnlineHistoryStore } from '../onlineHistoryStore';
 import { LiveRoomStatus, MonitorSnapshot } from '../types';
 
@@ -71,7 +78,7 @@ function readJson<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
 }
 
-test('history site export preserves timestamps, null samples, midnight dates, and removed rooms', async (t) => {
+test('history site v2 export preserves timestamps, null samples, midnight dates, and removed rooms', async (t) => {
   const { root, store } = createFixture(t);
   const beforeMidnight = new Date(2026, 7, 22, 23, 59, 45, 321).getTime();
   const afterMidnight = new Date(2026, 7, 23, 0, 0, 0, 654).getTime();
@@ -84,13 +91,13 @@ test('history site export preserves timestamps, null samples, midnight dates, an
   const current = snapshot([room('100', '主播甲', null), room('400', '尚无采样', 0)]);
   const generatedAt = new Date(2026, 7, 23, 12, 0, 0).getTime();
   const report = exportHistorySiteData(root, store, current, { generatedAt, timeZone: 'Asia/Shanghai' });
-  const dataRoot = path.join(root, 'site', 'data', 'v1');
+  const dataRoot = path.join(root, 'site', 'data', 'v2');
   const manifest = readJson<HistorySiteManifest>(path.join(dataRoot, 'manifest.json'));
 
   assert.equal(report.roomCount, 3);
   assert.equal(report.dateCount, 2);
   assert.equal(report.pointCount, 3);
-  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.generatedAt, generatedAt);
   assert.equal(manifest.timeZone, 'Asia/Shanghai');
   assert.deepEqual(manifest.rooms.map((item) => item.roomId), ['100', '400', '200']);
@@ -98,18 +105,24 @@ test('history site export preserves timestamps, null samples, midnight dates, an
   assert.equal(manifest.rooms[2].monitored, false);
   assert.equal(manifest.rooms[2].anchorName, '已移除主播');
 
-  const firstDate = readJson<HistorySiteDateFile>(path.join(dataRoot, 'dates', `${localDate(beforeMidnight)}.json`));
-  const secondDate = readJson<HistorySiteDateFile>(path.join(dataRoot, 'dates', `${localDate(afterMidnight)}.json`));
-  assert.deepEqual(firstDate.rooms[0].points, [[beforeMidnight - firstDate.startMs, 42]]);
-  assert.deepEqual(secondDate.rooms.find((item) => item.roomId === '100')?.points, [
-    [afterMidnight - secondDate.startMs, null]
-  ]);
-  assert.deepEqual(secondDate.rooms.find((item) => item.roomId === '200')?.points, [
-    [deletedRoomPoint - secondDate.startMs, 9]
-  ]);
+  const firstMeta = manifest.dates.find((item) => item.date === localDate(beforeMidnight));
+  const secondMeta = manifest.dates.find((item) => item.date === localDate(afterMidnight));
+  assert.ok(firstMeta && secondMeta);
+  const firstIndex = readJson<HistorySiteDateIndexFile>(path.join(dataRoot, firstMeta.indexFile.file));
+  const secondIndex = readJson<HistorySiteDateIndexFile>(path.join(dataRoot, secondMeta.indexFile.file));
+  assert.deepEqual(firstIndex.activeRooms.map((item) => item.roomId), ['100']);
+  assert.deepEqual(secondIndex.activeRooms.map((item) => item.roomId), ['200']);
+  assert.deepEqual(secondIndex.idleRoomIds, ['100']);
+
+  const firstRoom = readJson<HistorySiteRoomDateFile>(path.join(dataRoot, firstIndex.activeRooms[0].dataFile.file));
+  const secondRoom = readJson<HistorySiteRoomDateFile>(path.join(dataRoot, secondIndex.activeRooms[0].dataFile.file));
+  const idle = readJson<HistorySiteIdleDateFile>(path.join(dataRoot, secondIndex.idleDataFile!.file));
+  assert.deepEqual(firstRoom.points, [[beforeMidnight - firstMeta.startMs, 42]]);
+  assert.deepEqual(idle.rooms[0].points, [[afterMidnight - secondMeta.startMs, null]]);
+  assert.deepEqual(secondRoom.points, [[deletedRoomPoint - secondMeta.startMs, 9]]);
 });
 
-test('history site sessions match the store and repeated export is deterministic', async (t) => {
+test('history site v2 sessions match the store and content revisions stay stable', async (t) => {
   const { root, store } = createFixture(t);
   const start = new Date(2026, 7, 23, 10, 0, 0, 111).getTime();
   await store.record([room('300', '场次主播', 10)], start);
@@ -120,17 +133,21 @@ test('history site sessions match the store and repeated export is deterministic
   const current = snapshot([room('300', '场次主播', 0)]);
   const options = { generatedAt: start + 60_000, timeZone: 'Asia/Shanghai' };
   const first = exportHistorySiteData(root, store, current, options);
-  const dataRoot = path.join(root, 'site', 'data', 'v1');
-  const sessionsPath = path.join(dataRoot, 'sessions', '300.json');
+  const dataRoot = path.join(root, 'site', 'data', 'v2');
   const manifestPath = path.join(dataRoot, 'manifest.json');
-  const firstManifest = fs.readFileSync(manifestPath, 'utf8');
-  const sessions = readJson<HistorySiteSessionsFile>(sessionsPath);
+  const firstManifest = readJson<HistorySiteManifest>(manifestPath);
+  const sessions = readJson<HistorySiteSessionsFile>(path.join(dataRoot, firstManifest.rooms[0].sessionFile.file));
 
   assert.deepEqual(sessions.sessions, store.getRoomSessions('300'));
-  assert.ok(first.changedFileCount >= 3);
+  assert.ok(first.changedFileCount >= 4);
 
   const second = exportHistorySiteData(root, store, current, options);
   assert.equal(second.changedFileCount, 0);
-  assert.equal(fs.readFileSync(manifestPath, 'utf8'), firstManifest);
   assert.equal(fs.existsSync(`${manifestPath}.tmp`), false);
+
+  const third = exportHistorySiteData(root, store, current, { ...options, generatedAt: options.generatedAt + 1 });
+  const thirdManifest = readJson<HistorySiteManifest>(manifestPath);
+  assert.equal(third.changedFileCount, 1);
+  assert.equal(thirdManifest.dates[0].indexFile.revision, firstManifest.dates[0].indexFile.revision);
+  assert.equal(thirdManifest.rooms[0].sessionFile.revision, firstManifest.rooms[0].sessionFile.revision);
 });
