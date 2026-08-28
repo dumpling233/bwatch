@@ -138,18 +138,45 @@ test('history session focus drives ordinary filters without retaining a backup s
   assert.match(styles, /\.legend-list \{ display: flex; flex-wrap: wrap/);
 });
 test('history site mirrors the VS Code session peak trend controls', () => {
+  assert.match(html, /id="sessionPeakHeightRange"[^>]*min="160"[^>]*max="640"[^>]*step="10"/);
+  assert.match(html, /id="sessionPeakHeightLabel"/);
   assert.match(html, /id="sessionPeakTrend"/);
+  assert.ok(html.indexOf('id="sessionPeakHeightRange"') < html.indexOf('id="roomSelect"'));
   assert.match(source, /const SESSION_PEAK_RANGES = \[10, 30, 'all'\]/);
   assert.match(source, /sessionPeakRange: 30/);
+  assert.match(source, /sessionPeakHeight: SESSION_PEAK_CHART_DEFAULT_HEIGHT/);
   assert.match(source, /function normalizeSessionPeakRange/);
+  assert.match(source, /function clampSessionPeakHeight/);
   assert.match(source, /function getVisibleSessionPeakSessions/);
-  assert.match(source, /SESSION_PEAK_CHART_HEIGHT = 180/);
+  assert.match(source, /SESSION_PEAK_CHART_DEFAULT_HEIGHT = 180/);
   assert.match(source, /SESSION_PEAK_CHART_MIN_WIDTH = 360/);
   assert.match(source, /state\.sessionPeakRange = range/);
+  assert.match(source, /state\.sessionPeakHeight = clampSessionPeakHeight/);
+  assert.match(source, /sessionPeakHeight: state\.sessionPeakHeight/);
+  assert.match(source, /buildSessionPeakNumberTicks\(maxPeak, plotHeight\)/);
+  assert.match(source, /Math\.max\(4, Math\.min\(10, Math\.floor\(plotHeight \/ 36\)\)\)/);
+  assert.match(source, /filterAxisTicksBySpacing\(ticks, 0, maxPeak, plotHeight, 24\)/);
+  assert.match(source, /element\.style\.height = `\$\{state\.sessionPeakHeight\}px`/);
+  assert.match(source, /chart\.style\.height = `\$\{state\.sessionPeakHeight\}px`/);
+  assert.match(source, /tooltip\.offsetWidth \|\| 220/);
+  assert.match(source, /aboveTop >= 8 \? aboveTop/);
   assert.match(source, /session-peak-point.*selected/);
   assert.match(source, /峰值在线人数/);
   assert.match(source, /直播时长/);
   assert.doesNotMatch(styles, /session-peak-scroll/);
+  assert.match(styles, /\.session-peak-chart svg\s*\{[^}]*height:\s*100%/s);
+  assert.match(styles, /\.session-peak-tooltip\s*\{[^}]*transform:\s*none/s);
+  assert.doesNotMatch(styles, /\.session-peak-tooltip\.align-right/);
+
+  const context = vm.createContext({
+    Number,
+    Math,
+    SESSION_PEAK_CHART_DEFAULT_HEIGHT: 180
+  });
+  vm.runInContext(extractFunction('clampSessionPeakHeight', 'getVisibleSessionPeakSessions'), context);
+  assert.equal(vm.runInContext('clampSessionPeakHeight(undefined)', context), 180);
+  assert.equal(vm.runInContext('clampSessionPeakHeight(120)', context), 160);
+  assert.equal(vm.runInContext('clampSessionPeakHeight(720)', context), 640);
 });
 
 test('history site keeps the newest session peaks and sorts them chronologically', () => {

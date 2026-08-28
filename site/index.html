@@ -25,6 +25,14 @@
 
   <main class="workspace">
     <section class="control-band" aria-label="历史范围控制">
+      <label class="control-field height-field session-peak-height-field">
+        <span class="range-heading">
+          <span class="field-heading">场次峰值图高度</span>
+          <output id="sessionPeakHeightLabel">180 px</output>
+        </span>
+        <input id="sessionPeakHeightRange" type="range" min="160" max="640" step="10" value="180" aria-label="场次峰值图表高度">
+      </label>
+
       <div class="control-field">
         <span class="field-heading">主播 / 直播场次</span>
         <div class="session-controls">

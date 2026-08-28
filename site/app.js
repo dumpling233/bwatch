@@ -13,11 +13,11 @@
     '#FB7185', '#2DD4BF', '#A3E635', '#38BDF8', '#C084FC', '#FB923C'
   ];
   const SESSION_PEAK_CHART_MIN_WIDTH = 360;
-  const SESSION_PEAK_CHART_HEIGHT = 180;
+  const SESSION_PEAK_CHART_DEFAULT_HEIGHT = 180;
   const SESSION_PEAK_RANGES = [10, 30, 'all'];
 
   const refs = Object.fromEntries([
-    'exportStatus', 'themeToggle', 'dateInput', 'dateButtons', 'roomSelect', 'sessionSelect', 'clearSession', 'sessionPeakTrend', 'heightRange', 'heightLabel',
+    'exportStatus', 'themeToggle', 'dateInput', 'dateButtons', 'roomSelect', 'sessionSelect', 'clearSession', 'sessionPeakTrend', 'sessionPeakHeightRange', 'sessionPeakHeightLabel', 'heightRange', 'heightLabel',
     'rangeStart', 'rangeEnd', 'rangeFill', 'rangeLabel', 'scopeFilters', 'notice', 'chartSummary',
     'chartFrame', 'chart', 'tooltip', 'chartEmpty', 'legend', 'legendCount', 'hideAll', 'showAll'
   ].map((id) => [id, document.getElementById(id)]));
@@ -33,6 +33,7 @@
     sessionsLoaded: false,
     sessionsError: '',
     sessionPeakRange: 30,
+    sessionPeakHeight: SESSION_PEAK_CHART_DEFAULT_HEIGHT,
     endMinute: 1439,
     roomId: '',
     sessionId: '',
@@ -114,6 +115,16 @@
       locateSession();
     });
     refs.clearSession.addEventListener('click', clearSessionFilter);
+    refs.sessionPeakHeightRange.addEventListener('input', () => {
+      const height = clampSessionPeakHeight(Number(refs.sessionPeakHeightRange.value));
+      refs.sessionPeakHeightRange.value = String(height);
+      refs.sessionPeakHeightLabel.textContent = `${height} px`;
+    });
+    refs.sessionPeakHeightRange.addEventListener('change', () => {
+      state.sessionPeakHeight = clampSessionPeakHeight(Number(refs.sessionPeakHeightRange.value));
+      persistState();
+      renderSessionPeakTrend();
+    });
     refs.heightRange.addEventListener('input', () => {
       state.height = clamp(Number(refs.heightRange.value) || 480, 160, 640);
       refs.heightLabel.textContent = `${state.height} px`;
@@ -191,6 +202,8 @@
     } else {
       state.roomId = '';
     }
+    refs.sessionPeakHeightRange.value = String(state.sessionPeakHeight);
+    refs.sessionPeakHeightLabel.textContent = `${state.sessionPeakHeight} px`;
     refs.heightRange.value = String(state.height);
     refs.heightLabel.textContent = `${state.height} px`;
     refs.chartFrame.style.setProperty('--chart-height', `${state.height}px`);
@@ -578,6 +591,11 @@
     return value === 'all' ? 'all' : Number(value) === 10 ? 10 : 30;
   }
 
+  function clampSessionPeakHeight(value) {
+    if (!Number.isFinite(value)) return SESSION_PEAK_CHART_DEFAULT_HEIGHT;
+    return Math.min(640, Math.max(160, Math.round(value)));
+  }
+
   function getVisibleSessionPeakSessions(sessions, range = state.sessionPeakRange) {
     const sorted = [...(Array.isArray(sessions) ? sessions : [])]
       .filter((session) => isFiniteNumber(session.startMs) && isFiniteNumber(session.endMs))
@@ -631,6 +649,7 @@
   function sessionPeakPlaceholder(message) {
     const element = document.createElement('div');
     element.className = 'session-peak-placeholder';
+    element.style.height = `${state.sessionPeakHeight}px`;
     element.textContent = message;
     return element;
   }
@@ -638,17 +657,17 @@
   function buildSessionPeakChart(sessions) {
     const chart = document.createElement('div');
     chart.className = 'session-peak-chart';
+    chart.style.height = `${state.sessionPeakHeight}px`;
     const tooltip = document.createElement('div');
     tooltip.className = 'session-peak-tooltip';
     tooltip.hidden = true;
     chart.append(tooltip);
     const width = Math.max(SESSION_PEAK_CHART_MIN_WIDTH, chart.clientWidth || refs.sessionPeakTrend.clientWidth || 900);
-    chart.replaceChildren(buildSessionPeakSvg(width, sessions, tooltip), tooltip);
+    chart.replaceChildren(buildSessionPeakSvg(width, state.sessionPeakHeight, sessions, tooltip), tooltip);
     return chart;
   }
 
-  function buildSessionPeakSvg(width, sessions, tooltip) {
-    const height = SESSION_PEAK_CHART_HEIGHT;
+  function buildSessionPeakSvg(width, height, sessions, tooltip) {
     const padding = { left: 58, right: 14, top: 18, bottom: 40 };
     const plotWidth = Math.max(1, width - padding.left - padding.right);
     const plotHeight = Math.max(1, height - padding.top - padding.bottom);
@@ -662,7 +681,7 @@
     const xAt = (index) => sessions.length <= 1 ? padding.left + plotWidth / 2 : padding.left + index / (sessions.length - 1) * plotWidth;
     const yAt = (peak) => padding.top + plotHeight - Math.max(0, Number(peak) || 0) / maxPeak * plotHeight;
 
-    for (const tick of buildAdaptiveNumberTicks({ min: 0, max: maxPeak }, plotHeight)) {
+    for (const tick of buildSessionPeakNumberTicks(maxPeak, plotHeight)) {
       const y = yAt(tick);
       svg.append(svgLine(padding.left, y, width - padding.right, y, 'session-peak-grid-line'));
       svg.append(svgText(padding.left - 7, y + 4, formatNumber(tick), 'session-peak-axis-text', 'end'));
@@ -700,7 +719,7 @@
       hitArea.setAttribute('cy', formatSvgNumber(y));
       hitArea.setAttribute('r', '10');
       hitArea.setAttribute('tabindex', '0');
-      const show = () => updateSessionPeakTooltip(tooltip, session, x, y, width);
+      const show = () => updateSessionPeakTooltip(tooltip, session, x, y, width, height);
       hitArea.addEventListener('mouseenter', show);
       hitArea.addEventListener('focus', show);
       hitArea.addEventListener('mouseleave', () => { tooltip.hidden = true; });
@@ -731,7 +750,18 @@
     return [...indexes].sort((left, right) => left - right);
   }
 
-  function updateSessionPeakTooltip(tooltip, session, x, y, width) {
+  function buildSessionPeakNumberTicks(maxPeak, plotHeight) {
+    const targetIntervals = Math.max(4, Math.min(10, Math.floor(plotHeight / 36)));
+    const step = getNiceAxisStep(maxPeak / targetIntervals);
+    const ticks = [0];
+    for (let value = step; value < maxPeak; value += step) {
+      ticks.push(Number(value.toPrecision(12)));
+    }
+    ticks.push(maxPeak);
+    return filterAxisTicksBySpacing(ticks, 0, maxPeak, plotHeight, 24);
+  }
+
+  function updateSessionPeakTooltip(tooltip, session, x, y, width, height) {
     tooltip.replaceChildren();
     const time = document.createElement('div');
     time.className = 'session-peak-tooltip-time';
@@ -744,9 +774,17 @@
     duration.textContent = '直播时长 ' + formatSessionDuration(session.durationMs);
     tooltip.append(time, peak, duration);
     tooltip.hidden = false;
-    tooltip.style.left = Math.max(6, Math.min(width - 8, x)) + 'px';
-    tooltip.style.top = Math.max(6, y - 8) + 'px';
-    tooltip.classList.toggle('align-right', x > width * 0.62);
+    const tooltipWidth = tooltip.offsetWidth || 220;
+    const tooltipHeight = tooltip.offsetHeight || 68;
+    const gap = 10;
+    const left = Math.min(
+      Math.max(8, x - tooltipWidth / 2),
+      Math.max(8, width - tooltipWidth - 8)
+    );
+    const aboveTop = y - tooltipHeight - gap;
+    const belowTop = Math.min(height - tooltipHeight - 8, y + gap);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${aboveTop >= 8 ? aboveTop : Math.max(8, belowTop)}px`;
   }
 
   function formatFullSessionDateTime(timestampMs) {
@@ -1536,6 +1574,7 @@
     state.hidden = new Set(Array.isArray(saved.hidden) ? saved.hidden.filter((item) => typeof item === 'string') : []);
     state.theme = saved.theme === 'light' || saved.theme === 'dark' ? saved.theme : 'system';
     state.sessionPeakRange = normalizeSessionPeakRange(saved.sessionPeakRange);
+    state.sessionPeakHeight = clampSessionPeakHeight(Number(saved.sessionPeakHeight));
     state.height = isFiniteNumber(saved.height) ? clamp(saved.height, 160, 640) : 480;
   }
 
@@ -1552,6 +1591,7 @@
       hidden: Array.from(state.hidden),
       theme: state.theme,
       sessionPeakRange: state.sessionPeakRange,
+      sessionPeakHeight: state.sessionPeakHeight,
       height: state.height
     }));
   }
