@@ -127,6 +127,15 @@ test('session peak trend sorts sessions, applies range limits, and persists its 
   assert.match(source, /chart\.style\.height = `\$\{sessionPeakHeight\}px`/);
   assert.match(source, /placeholder\.style\.height = `\$\{sessionPeakHeight\}px`/);
   assert.match(source, /range\.setAttribute\('aria-label', '场次峰值图表高度'\)/);
+  const historyTrendBuilder = extractFunction(source, 'buildHistoryTrend', 'buildHistoryCalendar');
+  assert.ok(
+    historyTrendBuilder.indexOf('buildSessionPeakHeightControl()')
+      < historyTrendBuilder.indexOf('buildHistorySessionFilter()')
+  );
+  assert.doesNotMatch(
+    extractFunction(source, 'buildHistorySessionPeakTrend', 'buildSessionPeakHeightControl'),
+    /buildSessionPeakHeightControl\(\)/
+  );
   assert.match(source, /padding = \{ left: 58, right: 14, top: 18, bottom: 40 \}/);
   assert.match(source, /tooltip\.offsetWidth \|\| 220/);
   assert.match(source, /aboveTop >= 8 \? aboveTop/);

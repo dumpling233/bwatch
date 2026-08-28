@@ -1458,7 +1458,7 @@
       controls.append(button);
     }
     heading.append(title, controls);
-    section.append(heading, buildSessionPeakHeightControl());
+    section.append(heading);
 
     if (roomHistoryAnalysisLoading || !roomHistoryAnalysisLoaded) {
       section.append(sessionPeakPlaceholder('正在读取直播场次'));
@@ -1690,7 +1690,7 @@
     const datePicker = buildHistoryCalendar();
     const timeControls = buildHistoryTimeControls();
     const sessionPeakTrend = buildHistorySessionPeakTrend();
-    header.append(buildHistorySessionFilter());
+    header.append(buildSessionPeakHeightControl(), buildHistorySessionFilter());
     if (sessionPeakTrend) {
       header.append(sessionPeakTrend);
     }
