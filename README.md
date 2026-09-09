@@ -56,6 +56,8 @@ BWatch is a VSCode extension that monitors multiple Bilibili live rooms in the s
 
 GitHub Pages 的主播场次峰值图同样提供“时段着色”开关。开启后，短于 4 小时的场次点按八个时间段分类着色，4 小时及以上显示为灰色长场次；折线保持蓝色，悬浮详情和图下图例显示分类。网页使用导出 Manifest 的时区进行分类，并将开关状态保存在浏览器 `localStorage`，不会修改历史数据或导出格式。
 
+网页明暗主题参考 VSCode 插件的颜色层级：暗色模式使用中性深灰页面与面板、近黑独立绘图区、浅灰坐标文字和低亮网格，场次峰值主线固定为蓝色，选中点使用橙色。主播和分组合计曲线继续使用与插件一致的高区分度调色板。
+
 日常更新流程：
 
 ```text

@@ -64,6 +64,13 @@ test('history site supports dark mode, plugin colors, and a single-series peak g
   assert.match(html, /id="themeToggle"/);
   assert.match(styles, /:root\[data-theme="dark"\]/);
   assert.match(styles, /prefers-color-scheme: dark/);
+  assert.match(styles, /--bg:\s*#181818/);
+  assert.match(styles, /--chart-bg:\s*#111213/);
+  assert.match(styles, /--chart-blue:\s*#4daafc/);
+  assert.match(styles, /\.chart-frame\s*\{[^}]*background:\s*var\(--chart-bg\)/s);
+  assert.match(styles, /\.session-peak-chart\s*\{[^}]*background:\s*var\(--chart-bg\)/s);
+  assert.match(styles, /\.session-peak-line\s*\{[^}]*stroke:\s*var\(--chart-blue\)/s);
+  assert.match(styles, /\.session-peak-point\s*\{[^}]*fill:\s*var\(--chart-blue\)/s);
   assert.match(styles, /\.peak-line/);
   assert.match(source, /plottableSeries\.length === 1/);
   assert.match(source, /'#3B82F6', '#22C55E', '#EAB308', '#EF4444'/);

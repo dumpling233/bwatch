@@ -2,7 +2,7 @@
 
 ## 系统结构
 
-- 前端/UI：VSCode `WebviewViewProvider` 在 Activity Bar 提供直播监控和实时弹幕两个独立侧边栏 View，静态资源位于 `media/`；`site/` 提供无构建依赖的浏览器历史走势工作台。Webview 使用 `getState` / `setState`，静态页面使用 `localStorage` 保存纯 UI 控制状态。
+- 前端/UI：VSCode `WebviewViewProvider` 在 Activity Bar 提供直播监控和实时弹幕两个独立侧边栏 View，静态资源位于 `media/`；`site/` 提供无构建依赖的浏览器历史走势工作台。Webview 使用 `getState` / `setState`，静态页面使用 `localStorage` 保存纯 UI 控制状态。网页 CSS 通过页面、面板、绘图区、边界、坐标和图表颜色语义变量复刻 VSCode 的中性高对比层级；暗色绘图区独立于面板背景，场次峰值主线使用蓝色，不依赖数据分类颜色。
 - 扩展宿主：TypeScript VSCode 扩展，入口为 `src/extension.ts`，编译输出到 `out/`。
 - 数据层：不使用数据库；监控房间号、自定义分组和刷新/提醒配置存储在 VSCode 用户设置中，在线人数历史按房间长期保存到 VSCode 扩展本地存储目录；用户主动导出后，公开静态副本按日期索引、活跃房间分片和闲置房间合并文件写入 `site/data/v2/`。
 - 外部服务：通过 B站直播房间基础信息接口 `xlive/web-room/v1/index/getRoomBaseInfo` 获取房间标题、主播名、开播状态、人气和开播时间；通过 `x/relation/stat?vmid={uid}` 获取主播粉丝数；直播中房间再通过 `xlive/general-interface/v1/rank/getOnlineGoldRank` 获取直播页同款在线观众人数；主播名模糊搜索通过 `x/web-interface/search/type?search_type=live_user` 获取候选直播间；实时弹幕机通过 `room/v1/Room/get_info`、`x/web-interface/nav` 和带 WBI 签名的 `xlive/web-room/v1/index/getDanmuInfo` 获取真实房间号、签名密钥、token 和 WebSocket 服务器，再连接 B站直播弹幕服务器。HTTP 请求经过统一网络适配层，WebSocket 按相同代理配置尝试 HTTP/HTTPS 代理候选。
