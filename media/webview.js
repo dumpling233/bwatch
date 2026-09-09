@@ -52,6 +52,23 @@
   const SESSION_PEAK_CHART_MIN_WIDTH = 360;
   const SESSION_PEAK_CHART_DEFAULT_HEIGHT = 180;
   const SESSION_PEAK_RANGES = [10, 30, 'all'];
+  const SESSION_PEAK_LONG_DURATION_MS = 4 * 60 * 60 * 1000;
+  const SESSION_PEAK_PERIODS = [
+    { key: 'overnight', label: '阴间时间段', rangeLabel: '00:00\u201308:00', startMinute: 0, endMinute: 8 * 60, color: '#8B5CF6' },
+    { key: 'early', label: '早台', rangeLabel: '08:00\u201310:00', startMinute: 8 * 60, endMinute: 10 * 60, color: '#3B82F6' },
+    { key: 'lateMorning', label: '次早台', rangeLabel: '10:00\u201312:00', startMinute: 10 * 60, endMinute: 12 * 60, color: '#06B6D4' },
+    { key: 'noon', label: '午台', rangeLabel: '12:00\u201314:00', startMinute: 12 * 60, endMinute: 14 * 60, color: '#10B981' },
+    { key: 'afternoon', label: '下午台', rangeLabel: '14:00\u201316:00', startMinute: 14 * 60, endMinute: 16 * 60, color: '#84CC16' },
+    { key: 'evening', label: '傍晚台', rangeLabel: '16:00\u201318:00', startMinute: 16 * 60, endMinute: 18 * 60, color: '#EAB308' },
+    { key: 'primeOne', label: '晚黄金段一', rangeLabel: '18:00\u201322:00', startMinute: 18 * 60, endMinute: 22 * 60, color: '#F97316' },
+    { key: 'primeTwo', label: '晚黄金段二', rangeLabel: '22:00\u201324:00', startMinute: 22 * 60, endMinute: 24 * 60, color: '#EF4444' }
+  ];
+  const SESSION_PEAK_LONG_PERIOD = {
+    key: 'long',
+    label: '长场次',
+    rangeLabel: '>= 4小时',
+    color: '#8C8C8C'
+  };
   const AGGREGATE_CHART_DEFAULT_HEIGHT = 240;
   const AGGREGATE_CHART_MIN_HEIGHT = 160;
   const AGGREGATE_CHART_MAX_HEIGHT = 640;
@@ -117,6 +134,7 @@
   let selectedRoomSessionKey = persistedState.selectedRoomSessionKey;
   let sessionPeakRange = persistedState.sessionPeakRange;
   let sessionPeakHeight = persistedState.sessionPeakHeight;
+  let sessionPeakPeriodColorEnabled = persistedState.sessionPeakPeriodColorEnabled;
   let durationTicker = undefined;
   const responsiveChartCleanups = [];
 
@@ -1430,6 +1448,70 @@
     return normalizedRange === 'all' ? sorted : sorted.slice(-normalizedRange);
   }
 
+  function getSessionPeakPeriodForTimestamp(timestampMs) {
+    const date = new Date(timestampMs);
+    const minute = date.getHours() * 60
+      + date.getMinutes()
+      + date.getSeconds() / 60
+      + date.getMilliseconds() / 60000;
+    return SESSION_PEAK_PERIODS.find((period) =>
+      minute >= period.startMinute && minute < period.endMinute
+    ) || SESSION_PEAK_PERIODS[0];
+  }
+
+  function getSessionPeakPeriodOverlap(startMs, endMs, period) {
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      return 0;
+    }
+    let overlapMs = 0;
+    const day = new Date(startMs);
+    day.setHours(0, 0, 0, 0);
+    while (day.getTime() < endMs) {
+      const periodStart = new Date(day.getTime());
+      periodStart.setMinutes(period.startMinute);
+      const periodEnd = new Date(day.getTime());
+      periodEnd.setMinutes(period.endMinute);
+      overlapMs += Math.max(
+        0,
+        Math.min(endMs, periodEnd.getTime()) - Math.max(startMs, periodStart.getTime())
+      );
+      day.setDate(day.getDate() + 1);
+      day.setHours(0, 0, 0, 0);
+    }
+    return overlapMs;
+  }
+
+  function classifySessionPeakPeriod(session) {
+    const startMs = Number(session?.startMs);
+    const endMs = Number(session?.endMs);
+    const measuredDurationMs = Number(session?.durationMs);
+    const durationMs = Number.isFinite(measuredDurationMs)
+      ? Math.max(0, measuredDurationMs)
+      : Math.max(0, endMs - startMs);
+    if (durationMs >= SESSION_PEAK_LONG_DURATION_MS) {
+      return SESSION_PEAK_LONG_PERIOD;
+    }
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      return getSessionPeakPeriodForTimestamp(startMs);
+    }
+    const overlaps = SESSION_PEAK_PERIODS.map((period) => ({
+      period,
+      overlapMs: getSessionPeakPeriodOverlap(startMs, endMs, period)
+    }));
+    const maxOverlapMs = overlaps.reduce(
+      (maximum, item) => Math.max(maximum, item.overlapMs),
+      0
+    );
+    const candidates = overlaps.filter((item) => item.overlapMs === maxOverlapMs);
+    if (candidates.length === 1) {
+      return candidates[0].period;
+    }
+    const midpointPeriod = getSessionPeakPeriodForTimestamp(startMs + (endMs - startMs) / 2);
+    return candidates.some((item) => item.period.key === midpointPeriod.key)
+      ? midpointPeriod
+      : candidates[0].period;
+  }
+
   function buildHistorySessionPeakTrend() {
     if (!roomHistoryAnalysisRoomId) {
       return undefined;
@@ -1443,6 +1525,19 @@
     title.textContent = '场次峰值';
     const controls = document.createElement('div');
     controls.className = 'session-peak-range-controls';
+    const periodColorToggle = document.createElement('button');
+    periodColorToggle.type = 'button';
+    periodColorToggle.className = 'session-peak-range-button session-peak-period-toggle';
+    periodColorToggle.classList.toggle('active', sessionPeakPeriodColorEnabled);
+    periodColorToggle.setAttribute('aria-pressed', String(sessionPeakPeriodColorEnabled));
+    periodColorToggle.textContent = '时段着色';
+    periodColorToggle.title = sessionPeakPeriodColorEnabled ? '关闭场次时段着色' : '开启场次时段着色';
+    periodColorToggle.addEventListener('click', () => {
+      sessionPeakPeriodColorEnabled = !sessionPeakPeriodColorEnabled;
+      persistUiState();
+      renderHistoryTrend();
+    });
+    controls.append(periodColorToggle);
     for (const range of SESSION_PEAK_RANGES) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -1466,11 +1561,33 @@
       section.append(sessionPeakPlaceholder(roomHistoryAnalysisError));
     } else {
       const sessions = getVisibleSessionPeakSessions(roomHistoryAnalysisSessions);
-      section.append(sessions.length > 0
-        ? buildSessionPeakChart(sessions)
-        : sessionPeakPlaceholder('暂无可识别的直播场次'));
+      if (sessions.length > 0) {
+        section.append(buildSessionPeakChart(sessions));
+        if (sessionPeakPeriodColorEnabled) {
+          section.append(buildSessionPeakPeriodLegend());
+        }
+      } else {
+        section.append(sessionPeakPlaceholder('暂无可识别的直播场次'));
+      }
     }
     return section;
+  }
+
+  function buildSessionPeakPeriodLegend() {
+    const legend = document.createElement('div');
+    legend.className = 'session-peak-period-legend';
+    for (const period of [...SESSION_PEAK_PERIODS, SESSION_PEAK_LONG_PERIOD]) {
+      const item = document.createElement('span');
+      item.className = 'session-peak-period-item';
+      const swatch = document.createElement('span');
+      swatch.className = 'session-peak-period-swatch';
+      swatch.style.backgroundColor = period.color;
+      const label = document.createElement('span');
+      label.textContent = `${period.label} ${period.rangeLabel}`;
+      item.append(swatch, label);
+      legend.append(item);
+    }
+    return legend;
   }
 
   function sessionPeakPlaceholder(message) {
@@ -1586,10 +1703,17 @@
       const y = yAt(session.peakOnline);
       const selected = getSessionKey(session) === selectedRoomSessionKey;
       const point = createSvgElement('circle');
-      point.setAttribute('class', `session-peak-point${selected ? ' selected' : ''}`);
+      const period = classifySessionPeakPeriod(session);
+      point.setAttribute(
+        'class',
+        `session-peak-point${sessionPeakPeriodColorEnabled ? ' period-colored' : ''}${selected ? ' selected' : ''}`
+      );
+      if (sessionPeakPeriodColorEnabled) {
+        point.style.fill = period.color;
+      }
       point.setAttribute('cx', formatSvgNumber(x));
       point.setAttribute('cy', formatSvgNumber(y));
-      point.setAttribute('r', selected ? '4.5' : '3.5');
+      point.setAttribute('r', selected ? '5' : '3.5');
       svg.append(point);
       const hitArea = createSvgElement('circle');
       hitArea.setAttribute('class', 'session-peak-hit-area');
@@ -1648,10 +1772,16 @@
     const duration = document.createElement('div');
     duration.className = 'session-peak-tooltip-row';
     duration.textContent = `直播时长 ${formatSessionDuration(session.durationMs)}`;
-    tooltip.append(time, peak, duration);
+    const period = classifySessionPeakPeriod(session);
+    const periodRow = document.createElement('div');
+    periodRow.className = 'session-peak-tooltip-row';
+    periodRow.textContent = period.key === SESSION_PEAK_LONG_PERIOD.key
+      ? '时段分类 长场次（>= 4小时）'
+      : `时段分类 ${period.label}（${period.rangeLabel}）`;
+    tooltip.append(time, peak, duration, periodRow);
     tooltip.hidden = false;
     const tooltipWidth = tooltip.offsetWidth || 220;
-    const tooltipHeight = tooltip.offsetHeight || 68;
+    const tooltipHeight = tooltip.offsetHeight || 88;
     const gap = 10;
     const left = Math.min(
       Math.max(8, x - tooltipWidth / 2),
@@ -3035,6 +3165,7 @@
       selectedRoomSessionKey,
       sessionPeakRange,
       sessionPeakHeight,
+      sessionPeakPeriodColorEnabled,
       historySessionHiddenRoomIdsBackup: historySessionHiddenRoomIdsBackup ? Array.from(historySessionHiddenRoomIdsBackup) : undefined,
       historyTrendExpanded,
       historySelectedDates,
@@ -3091,6 +3222,7 @@
         : '',
       sessionPeakRange: normalizeSessionPeakRange(safeState.sessionPeakRange),
       sessionPeakHeight: clampSessionPeakHeight(Number(safeState.sessionPeakHeight)),
+      sessionPeakPeriodColorEnabled: Boolean(safeState.sessionPeakPeriodColorEnabled),
       historySessionHiddenRoomIdsBackup: Array.isArray(safeState.historySessionHiddenRoomIdsBackup)
         ? safeState.historySessionHiddenRoomIdsBackup.filter((roomId) => typeof roomId === 'string')
         : undefined,

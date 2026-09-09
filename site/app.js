@@ -15,6 +15,23 @@
   const SESSION_PEAK_CHART_MIN_WIDTH = 360;
   const SESSION_PEAK_CHART_DEFAULT_HEIGHT = 180;
   const SESSION_PEAK_RANGES = [10, 30, 'all'];
+  const SESSION_PEAK_LONG_DURATION_MS = 4 * 60 * 60 * 1000;
+  const SESSION_PEAK_PERIODS = [
+    { key: 'overnight', label: '阴间时间段', rangeLabel: '00:00\u201308:00', startMinute: 0, endMinute: 8 * 60, color: '#8B5CF6' },
+    { key: 'early', label: '早台', rangeLabel: '08:00\u201310:00', startMinute: 8 * 60, endMinute: 10 * 60, color: '#3B82F6' },
+    { key: 'lateMorning', label: '次早台', rangeLabel: '10:00\u201312:00', startMinute: 10 * 60, endMinute: 12 * 60, color: '#06B6D4' },
+    { key: 'noon', label: '午台', rangeLabel: '12:00\u201314:00', startMinute: 12 * 60, endMinute: 14 * 60, color: '#10B981' },
+    { key: 'afternoon', label: '下午台', rangeLabel: '14:00\u201316:00', startMinute: 14 * 60, endMinute: 16 * 60, color: '#84CC16' },
+    { key: 'evening', label: '傍晚台', rangeLabel: '16:00\u201318:00', startMinute: 16 * 60, endMinute: 18 * 60, color: '#EAB308' },
+    { key: 'primeOne', label: '晚黄金段一', rangeLabel: '18:00\u201322:00', startMinute: 18 * 60, endMinute: 22 * 60, color: '#F97316' },
+    { key: 'primeTwo', label: '晚黄金段二', rangeLabel: '22:00\u201324:00', startMinute: 22 * 60, endMinute: 24 * 60, color: '#EF4444' }
+  ];
+  const SESSION_PEAK_LONG_PERIOD = {
+    key: 'long',
+    label: '长场次',
+    rangeLabel: '>= 4小时',
+    color: '#8C8C8C'
+  };
 
   const refs = Object.fromEntries([
     'exportStatus', 'themeToggle', 'dateInput', 'dateButtons', 'roomSelect', 'sessionSelect', 'clearSession', 'sessionPeakTrend', 'sessionPeakHeightRange', 'sessionPeakHeightLabel', 'heightRange', 'heightLabel',
@@ -34,6 +51,7 @@
     sessionsError: '',
     sessionPeakRange: 30,
     sessionPeakHeight: SESSION_PEAK_CHART_DEFAULT_HEIGHT,
+    sessionPeakPeriodColorEnabled: false,
     endMinute: 1439,
     roomId: '',
     sessionId: '',
@@ -604,6 +622,97 @@
     return normalizedRange === 'all' ? sorted : sorted.slice(-normalizedRange);
   }
 
+  function getSessionPeakWallClockMs(timestampMs) {
+    if (!Number.isFinite(timestampMs)) return Number.NaN;
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: state.manifest?.timeZone || 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(new Date(timestampMs));
+    const values = Object.fromEntries(parts
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, Number(part.value)]));
+    const millisecond = ((Math.trunc(timestampMs) % 1000) + 1000) % 1000;
+    return Date.UTC(
+      values.year,
+      values.month - 1,
+      values.day,
+      values.hour,
+      values.minute,
+      values.second,
+      millisecond
+    );
+  }
+
+  function getSessionPeakPeriodForTimestamp(timestampMs) {
+    const wallClockMs = getSessionPeakWallClockMs(timestampMs);
+    const date = new Date(wallClockMs);
+    const minute = date.getUTCHours() * 60
+      + date.getUTCMinutes()
+      + date.getUTCSeconds() / 60
+      + date.getUTCMilliseconds() / 60000;
+    return SESSION_PEAK_PERIODS.find((period) =>
+      minute >= period.startMinute && minute < period.endMinute
+    ) || SESSION_PEAK_PERIODS[0];
+  }
+
+  function getSessionPeakPeriodOverlap(wallStartMs, wallEndMs, period) {
+    if (!Number.isFinite(wallStartMs) || !Number.isFinite(wallEndMs) || wallEndMs <= wallStartMs) {
+      return 0;
+    }
+    const dayMs = 24 * 60 * 60 * 1000;
+    let dayStartMs = Math.floor(wallStartMs / dayMs) * dayMs;
+    let overlapMs = 0;
+    while (dayStartMs < wallEndMs) {
+      const periodStartMs = dayStartMs + period.startMinute * 60 * 1000;
+      const periodEndMs = dayStartMs + period.endMinute * 60 * 1000;
+      overlapMs += Math.max(
+        0,
+        Math.min(wallEndMs, periodEndMs) - Math.max(wallStartMs, periodStartMs)
+      );
+      dayStartMs += dayMs;
+    }
+    return overlapMs;
+  }
+
+  function classifySessionPeakPeriod(session) {
+    const startMs = Number(session?.startMs);
+    const endMs = Number(session?.endMs);
+    const measuredDurationMs = Number(session?.durationMs);
+    const durationMs = Number.isFinite(measuredDurationMs)
+      ? Math.max(0, measuredDurationMs)
+      : Math.max(0, endMs - startMs);
+    if (durationMs >= SESSION_PEAK_LONG_DURATION_MS) {
+      return SESSION_PEAK_LONG_PERIOD;
+    }
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      return getSessionPeakPeriodForTimestamp(startMs);
+    }
+    const wallStartMs = getSessionPeakWallClockMs(startMs);
+    const wallEndMs = getSessionPeakWallClockMs(endMs);
+    const overlaps = SESSION_PEAK_PERIODS.map((period) => ({
+      period,
+      overlapMs: getSessionPeakPeriodOverlap(wallStartMs, wallEndMs, period)
+    }));
+    const maxOverlapMs = overlaps.reduce(
+      (maximum, item) => Math.max(maximum, item.overlapMs),
+      0
+    );
+    const candidates = overlaps.filter((item) => item.overlapMs === maxOverlapMs);
+    if (candidates.length === 1) {
+      return candidates[0].period;
+    }
+    const midpointPeriod = getSessionPeakPeriodForTimestamp(startMs + (endMs - startMs) / 2);
+    return candidates.some((item) => item.period.key === midpointPeriod.key)
+      ? midpointPeriod
+      : candidates[0].period;
+  }
+
   function renderSessionPeakTrend() {
     if (!refs.sessionPeakTrend) return;
     refs.sessionPeakTrend.hidden = !state.roomId;
@@ -617,6 +726,19 @@
     title.textContent = '场次峰值';
     const controls = document.createElement('div');
     controls.className = 'session-peak-range-controls';
+    const periodColorToggle = document.createElement('button');
+    periodColorToggle.type = 'button';
+    periodColorToggle.className = 'session-peak-range-button session-peak-period-toggle';
+    periodColorToggle.classList.toggle('active', state.sessionPeakPeriodColorEnabled);
+    periodColorToggle.setAttribute('aria-pressed', String(state.sessionPeakPeriodColorEnabled));
+    periodColorToggle.textContent = '时段着色';
+    periodColorToggle.title = state.sessionPeakPeriodColorEnabled ? '关闭场次时段着色' : '开启场次时段着色';
+    periodColorToggle.addEventListener('click', () => {
+      state.sessionPeakPeriodColorEnabled = !state.sessionPeakPeriodColorEnabled;
+      persistState();
+      renderSessionPeakTrend();
+    });
+    controls.append(periodColorToggle);
     for (const range of SESSION_PEAK_RANGES) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -643,7 +765,31 @@
       return;
     }
     const sessions = getVisibleSessionPeakSessions(state.sessions);
-    refs.sessionPeakTrend.append(sessions.length ? buildSessionPeakChart(sessions) : sessionPeakPlaceholder('暂无可识别的直播场次'));
+    if (sessions.length) {
+      refs.sessionPeakTrend.append(buildSessionPeakChart(sessions));
+      if (state.sessionPeakPeriodColorEnabled) {
+        refs.sessionPeakTrend.append(buildSessionPeakPeriodLegend());
+      }
+    } else {
+      refs.sessionPeakTrend.append(sessionPeakPlaceholder('暂无可识别的直播场次'));
+    }
+  }
+
+  function buildSessionPeakPeriodLegend() {
+    const legend = document.createElement('div');
+    legend.className = 'session-peak-period-legend';
+    for (const period of [...SESSION_PEAK_PERIODS, SESSION_PEAK_LONG_PERIOD]) {
+      const item = document.createElement('span');
+      item.className = 'session-peak-period-item';
+      const swatch = document.createElement('span');
+      swatch.className = 'session-peak-period-swatch';
+      swatch.style.backgroundColor = period.color;
+      const label = document.createElement('span');
+      label.textContent = period.label + ' ' + period.rangeLabel;
+      item.append(swatch, label);
+      legend.append(item);
+    }
+    return legend;
   }
 
   function sessionPeakPlaceholder(message) {
@@ -708,10 +854,17 @@
       const y = yAt(session.peakOnline);
       const selected = sessionKey(session) === state.sessionId;
       const point = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      point.setAttribute('class', 'session-peak-point' + (selected ? ' selected' : ''));
+      const period = classifySessionPeakPeriod(session);
+      point.setAttribute(
+        'class',
+        'session-peak-point' + (state.sessionPeakPeriodColorEnabled ? ' period-colored' : '') + (selected ? ' selected' : '')
+      );
+      if (state.sessionPeakPeriodColorEnabled) {
+        point.style.fill = period.color;
+      }
       point.setAttribute('cx', formatSvgNumber(x));
       point.setAttribute('cy', formatSvgNumber(y));
-      point.setAttribute('r', selected ? '4.5' : '3.5');
+      point.setAttribute('r', selected ? '5' : '3.5');
       svg.append(point);
       const hitArea = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       hitArea.setAttribute('class', 'session-peak-hit-area');
@@ -772,10 +925,16 @@
     const duration = document.createElement('div');
     duration.className = 'session-peak-tooltip-row';
     duration.textContent = '直播时长 ' + formatSessionDuration(session.durationMs);
-    tooltip.append(time, peak, duration);
+    const period = classifySessionPeakPeriod(session);
+    const periodRow = document.createElement('div');
+    periodRow.className = 'session-peak-tooltip-row';
+    periodRow.textContent = period.key === SESSION_PEAK_LONG_PERIOD.key
+      ? '时段分类 长场次（>= 4小时）'
+      : '时段分类 ' + period.label + '（' + period.rangeLabel + '）';
+    tooltip.append(time, peak, duration, periodRow);
     tooltip.hidden = false;
     const tooltipWidth = tooltip.offsetWidth || 220;
-    const tooltipHeight = tooltip.offsetHeight || 68;
+    const tooltipHeight = tooltip.offsetHeight || 88;
     const gap = 10;
     const left = Math.min(
       Math.max(8, x - tooltipWidth / 2),
@@ -1575,6 +1734,7 @@
     state.theme = saved.theme === 'light' || saved.theme === 'dark' ? saved.theme : 'system';
     state.sessionPeakRange = normalizeSessionPeakRange(saved.sessionPeakRange);
     state.sessionPeakHeight = clampSessionPeakHeight(Number(saved.sessionPeakHeight));
+    state.sessionPeakPeriodColorEnabled = Boolean(saved.sessionPeakPeriodColorEnabled);
     state.height = isFiniteNumber(saved.height) ? clamp(saved.height, 160, 640) : 480;
   }
 
@@ -1592,6 +1752,7 @@
       theme: state.theme,
       sessionPeakRange: state.sessionPeakRange,
       sessionPeakHeight: state.sessionPeakHeight,
+      sessionPeakPeriodColorEnabled: state.sessionPeakPeriodColorEnabled,
       height: state.height
     }));
   }

@@ -287,6 +287,9 @@ select:disabled { opacity: .55; background: var(--surface-muted); }
 }
 .session-peak-range-controls {
   display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
 }
 .session-peak-range-button {
@@ -360,6 +363,35 @@ select:disabled { opacity: .55; background: var(--surface-muted); }
   fill: var(--accent);
   stroke: var(--surface);
   stroke-width: 2;
+}
+.session-peak-point.period-colored.selected {
+  stroke: var(--text);
+  stroke-width: 3;
+}
+.session-peak-period-legend {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+  padding: 4px 1px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+.session-peak-period-item {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.session-peak-period-swatch {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 50%;
 }
 .session-peak-hit-area {
   fill: transparent;

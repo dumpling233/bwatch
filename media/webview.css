@@ -1723,6 +1723,39 @@ button:hover {
   stroke: var(--vscode-charts-orange, #f97316);
 }
 
+.session-peak-point.period-colored.selected {
+  stroke: var(--vscode-focusBorder);
+  stroke-width: 3;
+}
+
+.session-peak-period-legend {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 2px 1px 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.session-peak-period-item {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.session-peak-period-swatch {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 50%;
+}
+
 .session-peak-hit-area {
   fill: transparent;
   cursor: pointer;

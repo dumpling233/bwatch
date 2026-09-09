@@ -145,6 +145,7 @@ test('history site mirrors the VS Code session peak trend controls', () => {
   assert.match(source, /const SESSION_PEAK_RANGES = \[10, 30, 'all'\]/);
   assert.match(source, /sessionPeakRange: 30/);
   assert.match(source, /sessionPeakHeight: SESSION_PEAK_CHART_DEFAULT_HEIGHT/);
+  assert.match(source, /sessionPeakPeriodColorEnabled: false/);
   assert.match(source, /function normalizeSessionPeakRange/);
   assert.match(source, /function clampSessionPeakHeight/);
   assert.match(source, /function getVisibleSessionPeakSessions/);
@@ -153,6 +154,13 @@ test('history site mirrors the VS Code session peak trend controls', () => {
   assert.match(source, /state\.sessionPeakRange = range/);
   assert.match(source, /state\.sessionPeakHeight = clampSessionPeakHeight/);
   assert.match(source, /sessionPeakHeight: state\.sessionPeakHeight/);
+  assert.match(source, /sessionPeakPeriodColorEnabled: state\.sessionPeakPeriodColorEnabled/);
+  assert.match(source, /state\.sessionPeakPeriodColorEnabled = Boolean\(saved\.sessionPeakPeriodColorEnabled\)/);
+  assert.match(source, /periodColorToggle\.setAttribute\('aria-pressed', String\(state\.sessionPeakPeriodColorEnabled\)\)/);
+  assert.match(source, /state\.sessionPeakPeriodColorEnabled = !state\.sessionPeakPeriodColorEnabled/);
+  assert.match(source, /if \(state\.sessionPeakPeriodColorEnabled\) \{\s*refs\.sessionPeakTrend\.append\(buildSessionPeakPeriodLegend\(\)\)/);
+  assert.match(source, /point\.style\.fill = period\.color/);
+  assert.match(source, /path\.setAttribute\('class', 'session-peak-line'\)/);
   assert.match(source, /buildSessionPeakNumberTicks\(maxPeak, plotHeight\)/);
   assert.match(source, /Math\.max\(4, Math\.min\(10, Math\.floor\(plotHeight \/ 36\)\)\)/);
   assert.match(source, /filterAxisTicksBySpacing\(ticks, 0, maxPeak, plotHeight, 24\)/);
@@ -163,10 +171,13 @@ test('history site mirrors the VS Code session peak trend controls', () => {
   assert.match(source, /session-peak-point.*selected/);
   assert.match(source, /峰值在线人数/);
   assert.match(source, /直播时长/);
+  assert.match(source, /时段分类 长场次（>= 4小时）/);
   assert.doesNotMatch(styles, /session-peak-scroll/);
   assert.match(styles, /\.session-peak-chart svg\s*\{[^}]*height:\s*100%/s);
   assert.match(styles, /\.session-peak-tooltip\s*\{[^}]*transform:\s*none/s);
   assert.doesNotMatch(styles, /\.session-peak-tooltip\.align-right/);
+  assert.match(styles, /\.session-peak-point\.period-colored\.selected\s*\{[^}]*stroke-width:\s*3/s);
+  assert.match(styles, /\.session-peak-period-legend\s*\{[^}]*flex-wrap:\s*wrap/s);
 
   const context = vm.createContext({
     Number,
@@ -177,6 +188,83 @@ test('history site mirrors the VS Code session peak trend controls', () => {
   assert.equal(vm.runInContext('clampSessionPeakHeight(undefined)', context), 180);
   assert.equal(vm.runInContext('clampSessionPeakHeight(120)', context), 160);
   assert.equal(vm.runInContext('clampSessionPeakHeight(720)', context), 640);
+});
+
+test('history site classifies session peak periods in the exported timezone', () => {
+  const periods = [
+    { key: 'overnight', startMinute: 0, endMinute: 8 * 60 },
+    { key: 'early', startMinute: 8 * 60, endMinute: 10 * 60 },
+    { key: 'lateMorning', startMinute: 10 * 60, endMinute: 12 * 60 },
+    { key: 'noon', startMinute: 12 * 60, endMinute: 14 * 60 },
+    { key: 'afternoon', startMinute: 14 * 60, endMinute: 16 * 60 },
+    { key: 'evening', startMinute: 16 * 60, endMinute: 18 * 60 },
+    { key: 'primeOne', startMinute: 18 * 60, endMinute: 22 * 60 },
+    { key: 'primeTwo', startMinute: 22 * 60, endMinute: 24 * 60 }
+  ];
+  const context = vm.createContext({
+    Date,
+    Intl,
+    Number,
+    Math,
+    Object,
+    state: { manifest: { timeZone: 'Asia/Shanghai' } },
+    SESSION_PEAK_PERIODS: periods,
+    SESSION_PEAK_LONG_PERIOD: { key: 'long' },
+    SESSION_PEAK_LONG_DURATION_MS: 4 * 60 * 60 * 1000
+  });
+  vm.runInContext(
+    extractFunction('getSessionPeakWallClockMs', 'renderSessionPeakTrend'),
+    context
+  );
+  const classify = vm.runInContext('classifySessionPeakPeriod', context) as (
+    session: { startMs: number; endMs: number; durationMs: number }
+  ) => { key: string };
+  const at = (day: number, hour: number, minute = 0, second = 0): number =>
+    Date.UTC(2026, 0, day, hour - 8, minute, second);
+  const pointSession = (hour: number, expectedKey: string): void => {
+    const timestamp = at(5, hour);
+    assert.equal(classify({ startMs: timestamp, endMs: timestamp, durationMs: 0 }).key, expectedKey);
+  };
+
+  pointSession(0, 'overnight');
+  pointSession(8, 'early');
+  pointSession(10, 'lateMorning');
+  pointSession(12, 'noon');
+  pointSession(14, 'afternoon');
+  pointSession(16, 'evening');
+  pointSession(18, 'primeOne');
+  pointSession(22, 'primeTwo');
+
+  assert.equal(classify({
+    startMs: at(5, 9),
+    endMs: at(5, 11, 30),
+    durationMs: 2.5 * 60 * 60 * 1000
+  }).key, 'lateMorning');
+  assert.equal(classify({
+    startMs: at(5, 8, 30),
+    endMs: at(5, 11, 30),
+    durationMs: 3 * 60 * 60 * 1000
+  }).key, 'lateMorning');
+  assert.equal(classify({
+    startMs: at(5, 23),
+    endMs: at(6, 2),
+    durationMs: 3 * 60 * 60 * 1000
+  }).key, 'overnight');
+  assert.equal(classify({
+    startMs: at(5, 8),
+    endMs: at(5, 11, 59, 59),
+    durationMs: 4 * 60 * 60 * 1000 - 1000
+  }).key, 'early');
+  assert.equal(classify({
+    startMs: at(5, 8),
+    endMs: at(5, 12),
+    durationMs: 4 * 60 * 60 * 1000
+  }).key, 'long');
+  assert.equal(classify({
+    startMs: at(5, 8),
+    endMs: at(5, 12, 1),
+    durationMs: 4 * 60 * 60 * 1000 + 60 * 1000
+  }).key, 'long');
 });
 
 test('history site keeps the newest session peaks and sorts them chronologically', () => {

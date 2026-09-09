@@ -145,6 +145,8 @@
 历史走势的主播场次分析不再使用独立 Webview 子面板。Webview 在历史走势控制区生成两个级联原生 select 控件：主播选择框使用当前监控快照，场次选择框通过既有 loadRoomSessions 消息读取 OnlineHistoryStore.getRoomSessions(roomId) 的本地长期数据。选择主播时清空旧场次并重新加载；选择场次时复用现有历史查询消息，自动定位到场次前后各 5 分钟，跨午夜最多查询两个相邻自然日。分析房间和场次键继续使用 Webview getState/setState 持久化，清除筛选只恢复普通历史范围，不删除本地历史。
 
 级联控件下方的场次峰值图复用同一批 `LiveSessionSummary` 数据，不触发额外 `loadRoomSessions`、B站请求或本地历史扫描。Webview 将场次按 `startMs` 正序后截取最近 10/30 场或保留全部，以等距 SVG 点位绘制 `peakOnline`；纵轴固定从 0 开始，按绘图区高度设置 4–10 个目标区间并使用易读整数步长，最小刻度间距为 24px。图表使用与其他走势图一致的 360px 最小宽度并随面板宽度自适应，不增加二级横向滚动条；坐标标签使用独立安全边距。场次峰值高度 `sessionPeakHeight` 默认 180px，限制在 160–640px，并与范围状态 `sessionPeakRange` 一起保存在 Webview state。悬浮详情先测量 `offsetWidth/offsetHeight`，优先置于数据点上方，空间不足时置于下方，再把最终坐标夹取到图表边界内，因此图表继续使用 `overflow: hidden` 而不会裁切提示。点选数据点直接调用现有 `selectRoomSession`。
+
+场次时段分类是展示层对 `startMs/endMs/durationMs` 的纯派生计算，不进入 `LiveSessionSummary`、宿主消息、导出 schema 或本地历史格式。短于 4 小时的场次按自然日拆分，累计与八个半开时段区间的重叠毫秒数；最长重叠并列时采用直播中点所属区间，恰在边界时落入后一时段。4 小时及以上场次直接归为长场次。VSCode Webview 使用本机时区并把 `sessionPeakPeriodColorEnabled` 存入 Webview state；GitHub Pages 使用 `manifest.timeZone` 将时间戳转换为导出时区的墙上时间，并把同名状态存入 `localStorage`，保证不同地区访问时分类一致。两端均默认关闭该开关；启用时只修改 SVG 数据点填充和分类图例，折线路径仍使用现有蓝色样式。
 ### 图例批量显示控制
 
 总览走势图和历史走势图分别将图例隐藏状态传入同一套渲染器，并在图例顶部提供隐藏全部、全部显示操作；批量操作只修改对应图表的隐藏集合，不修改范围筛选、合计曲线配置或本地历史数据。

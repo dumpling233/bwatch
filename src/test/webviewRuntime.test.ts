@@ -97,7 +97,7 @@ test('session peak trend sorts sessions, applies range limits, and persists its 
 
   const historySource = extractFunction(source, 'buildHistoryTrend', 'buildHistoryCalendar');
   assert.ok(
-    historySource.indexOf('header.append(buildHistorySessionFilter())')
+    historySource.indexOf('header.append(buildSessionPeakHeightControl(), buildHistorySessionFilter())')
       < historySource.indexOf('header.append(sessionPeakTrend)')
   );
   assert.ok(
@@ -114,6 +114,15 @@ test('session peak trend sorts sessions, applies range limits, and persists its 
   assert.match(source, /sessionPeakRange,\s*\n/);
   assert.match(source, /sessionPeakHeight,\s*\n/);
   assert.match(source, /sessionPeakHeight:\s*clampSessionPeakHeight/);
+  assert.match(source, /let sessionPeakPeriodColorEnabled = persistedState\.sessionPeakPeriodColorEnabled/);
+  assert.match(source, /sessionPeakPeriodColorEnabled,\s*\n/);
+  assert.match(source, /sessionPeakPeriodColorEnabled:\s*Boolean\(safeState\.sessionPeakPeriodColorEnabled\)/);
+  assert.match(source, /periodColorToggle\.setAttribute\('aria-pressed', String\(sessionPeakPeriodColorEnabled\)\)/);
+  assert.match(source, /sessionPeakPeriodColorEnabled = !sessionPeakPeriodColorEnabled/);
+  assert.match(source, /if \(sessionPeakPeriodColorEnabled\) \{\s*section\.append\(buildSessionPeakPeriodLegend\(\)\)/);
+  assert.match(source, /point\.style\.fill = period\.color/);
+  assert.match(source, /path\.setAttribute\('class', 'session-peak-line'\)/);
+  assert.match(source, /时段分类 长场次（>= 4小时）/);
   assert.match(source, /hitArea\.addEventListener\('click', \(\) => selectRoomSession\(session\)\)/);
   assert.match(source, /buildSessionPeakNumberTicks\(maxPeak, plotHeight\)/);
   assert.match(source, /Math\.max\(4, Math\.min\(10, Math\.floor\(plotHeight \/ 36\)\)\)/);
@@ -142,6 +151,84 @@ test('session peak trend sorts sessions, applies range limits, and persists its 
   assert.doesNotMatch(source, /session-peak-tooltip\.align-right|classList\.toggle\('align-right'/);
   assert.match(css, /\.session-peak-tooltip\s*\{[^}]*transform:\s*none/s);
   assert.match(css, /\.session-peak-range-button\.active\s*\{[^}]*background:\s*var\(--vscode-button-background\)/s);
+  assert.match(css, /\.session-peak-point\.period-colored\.selected\s*\{[^}]*stroke-width:\s*3/s);
+  assert.match(css, /\.session-peak-period-legend\s*\{[^}]*flex-wrap:\s*wrap/s);
+});
+
+test('session peak period classification follows local overlap and duration rules', () => {
+  const source = readWebviewSource();
+  const periods = [
+    { key: 'overnight', label: '阴间时间段', rangeLabel: '00:00-08:00', startMinute: 0, endMinute: 8 * 60, color: '#8B5CF6' },
+    { key: 'early', label: '早台', rangeLabel: '08:00-10:00', startMinute: 8 * 60, endMinute: 10 * 60, color: '#3B82F6' },
+    { key: 'lateMorning', label: '次早台', rangeLabel: '10:00-12:00', startMinute: 10 * 60, endMinute: 12 * 60, color: '#06B6D4' },
+    { key: 'noon', label: '午台', rangeLabel: '12:00-14:00', startMinute: 12 * 60, endMinute: 14 * 60, color: '#10B981' },
+    { key: 'afternoon', label: '下午台', rangeLabel: '14:00-16:00', startMinute: 14 * 60, endMinute: 16 * 60, color: '#84CC16' },
+    { key: 'evening', label: '傍晚台', rangeLabel: '16:00-18:00', startMinute: 16 * 60, endMinute: 18 * 60, color: '#EAB308' },
+    { key: 'primeOne', label: '晚黄金段一', rangeLabel: '18:00-22:00', startMinute: 18 * 60, endMinute: 22 * 60, color: '#F97316' },
+    { key: 'primeTwo', label: '晚黄金段二', rangeLabel: '22:00-24:00', startMinute: 22 * 60, endMinute: 24 * 60, color: '#EF4444' }
+  ];
+  const longPeriod = { key: 'long', label: '长场次', rangeLabel: '>= 4小时', color: '#8C8C8C' };
+  const context = vm.createContext({
+    Date,
+    Number,
+    Math,
+    SESSION_PEAK_PERIODS: periods,
+    SESSION_PEAK_LONG_PERIOD: longPeriod,
+    SESSION_PEAK_LONG_DURATION_MS: 4 * 60 * 60 * 1000
+  });
+  vm.runInContext(
+    extractFunction(source, 'getSessionPeakPeriodForTimestamp', 'buildHistorySessionPeakTrend'),
+    context
+  );
+  const classify = vm.runInContext('classifySessionPeakPeriod', context) as (
+    session: { startMs: number; endMs: number; durationMs: number }
+  ) => { key: string };
+  const at = (day: number, hour: number, minute = 0, second = 0): number =>
+    new Date(2026, 0, day, hour, minute, second).getTime();
+  const pointSession = (hour: number, expectedKey: string): void => {
+    const timestamp = at(5, hour);
+    assert.equal(classify({ startMs: timestamp, endMs: timestamp, durationMs: 0 }).key, expectedKey);
+  };
+
+  pointSession(0, 'overnight');
+  pointSession(8, 'early');
+  pointSession(10, 'lateMorning');
+  pointSession(12, 'noon');
+  pointSession(14, 'afternoon');
+  pointSession(16, 'evening');
+  pointSession(18, 'primeOne');
+  pointSession(22, 'primeTwo');
+
+  assert.equal(classify({
+    startMs: at(5, 9),
+    endMs: at(5, 11, 30),
+    durationMs: 2.5 * 60 * 60 * 1000
+  }).key, 'lateMorning');
+  assert.equal(classify({
+    startMs: at(5, 8, 30),
+    endMs: at(5, 11, 30),
+    durationMs: 3 * 60 * 60 * 1000
+  }).key, 'lateMorning');
+  assert.equal(classify({
+    startMs: at(5, 23),
+    endMs: at(6, 2),
+    durationMs: 3 * 60 * 60 * 1000
+  }).key, 'overnight');
+  assert.equal(classify({
+    startMs: at(5, 8),
+    endMs: at(5, 11, 59, 59),
+    durationMs: 4 * 60 * 60 * 1000 - 1000
+  }).key, 'early');
+  assert.equal(classify({
+    startMs: at(5, 8),
+    endMs: at(5, 12),
+    durationMs: 4 * 60 * 60 * 1000
+  }).key, 'long');
+  assert.equal(classify({
+    startMs: at(5, 8),
+    endMs: at(5, 12, 1),
+    durationMs: 4 * 60 * 60 * 1000 + 60 * 1000
+  }).key, 'long');
 });
 
 test('overview legend sorts latest online values without breaking chart rendering', () => {
