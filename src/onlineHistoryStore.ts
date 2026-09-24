@@ -1,5 +1,7 @@
 import * as fs from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   HistoryDateSummary,
   HistoryQueryResult,
@@ -15,6 +17,11 @@ export const ONLINE_HISTORY_RETENTION_MS = ONLINE_HISTORY_RECENT_WINDOW_MS;
 
 const ONLINE_HISTORY_DIR_NAME = 'online-history';
 const ONLINE_HISTORY_FILE_VERSION = 2;
+const ONLINE_HISTORY_WAL_VERSION = 1;
+const ONLINE_HISTORY_MIGRATION_KEY = 'bwatch.onlineHistory.migrated.v2';
+const ONLINE_HISTORY_FLUSH_INTERVAL_MS = 1_000;
+const ONLINE_HISTORY_MAX_PENDING_AGE_MS = 5_000;
+const ONLINE_HISTORY_COMPACTION_RECORDS = 2_000;
 
 interface StoredRoomHistoryFile {
   version: number;
@@ -27,20 +34,59 @@ interface SanitizedStoredRoomHistory {
   points: OnlineViewerHistoryPoint[];
 }
 
+interface WalRecord {
+  version: number;
+  sequence: number;
+  timestampMs: number;
+  online: number | null;
+  anchorName?: string;
+  checksum: string;
+}
+
+interface RoomPersistenceQueue {
+  records: WalRecord[];
+  pendingSince?: number;
+  lastPersistedSequence: number;
+  processing?: Promise<void>;
+  failedWrites: number;
+  lastError?: string;
+}
+
 export interface MementoLike {
   get<T>(key: string, defaultValue: T): T;
   update(key: string, value: unknown): Thenable<void>;
+}
+
+export type PersistenceState = 'healthy' | 'degraded' | 'failed';
+
+export interface PersistenceStatus {
+  state: PersistenceState;
+  enqueuedSequence: number;
+  lastPersistedSequence: number;
+  pendingAgeMs: number;
+  pendingRooms: number;
+  failedWrites: number;
+  lastError?: string;
 }
 
 export class OnlineHistoryStore {
   private readonly history: OnlineViewerHistory = {};
   private readonly anchorNames: Record<string, string> = {};
   private readonly historyDirPath: string | null;
+  private readonly roomSequences = new Map<string, number>();
+  private readonly roomQueues = new Map<string, RoomPersistenceQueue>();
+  private readonly migrationPending: Promise<void>;
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
+  private persistenceState: PersistenceState = 'healthy';
+  private lastPersistenceError: string | undefined;
+
+  readonly ready: Promise<void>;
 
   constructor(private readonly storage: MementoLike, storageRootPath?: string) {
     this.historyDirPath = storageRootPath ? path.join(storageRootPath, ONLINE_HISTORY_DIR_NAME) : null;
     this.loadLocalHistory();
-    this.migrateLegacyGlobalState();
+    this.migrationPending = this.migrateLegacyGlobalState();
+    this.ready = this.migrationPending.then(() => undefined);
   }
 
   getHistory(nowMs = Date.now()): OnlineViewerHistory {
@@ -190,24 +236,29 @@ export class OnlineHistoryStore {
   }
 
   async record(rooms: readonly LiveRoomStatus[], timestampMs = Date.now()): Promise<OnlineViewerHistory> {
+    await this.ready;
     const activeRoomIds: string[] = [];
-    const changedRoomIds = new Set<string>();
-
     for (const room of rooms) {
       if (!isRoomId(room.roomId)) {
         continue;
       }
 
       activeRoomIds.push(room.roomId);
-      this.history[room.roomId] = mergePoints(this.history[room.roomId] ?? [], [[timestampMs, room.online]]);
+      const point: OnlineViewerHistoryPoint = [timestampMs, room.online];
+      this.history[room.roomId] = mergePoints(this.history[room.roomId] ?? [], [point]);
       const anchorName = sanitizeAnchorName(room.roomId, room.anchorName);
       if (anchorName && this.anchorNames[room.roomId] !== anchorName) {
         this.anchorNames[room.roomId] = anchorName;
       }
-      changedRoomIds.add(room.roomId);
+      const queue = this.getRoomQueue(room.roomId);
+      const sequence = (this.roomSequences.get(room.roomId) ?? 0) + 1;
+      this.roomSequences.set(room.roomId, sequence);
+      const record = createWalRecord(sequence, timestampMs, room.online, this.anchorNames[room.roomId]);
+      queue.records.push(record);
+      queue.pendingSince ??= Date.now();
     }
 
-    await this.persistChangedRooms(changedRoomIds);
+    this.scheduleFlush();
     return this.getHistoryForRooms(activeRoomIds, timestampMs);
   }
 
@@ -246,82 +297,337 @@ export class OnlineHistoryStore {
     try {
       fs.mkdirSync(this.historyDirPath, { recursive: true });
       for (const fileName of fs.readdirSync(this.historyDirPath)) {
-        if (!fileName.endsWith('.json')) {
+        const extension = path.extname(fileName);
+        const roomId = path.basename(fileName, extension);
+        if (!isRoomId(roomId) || (extension !== '.json' && extension !== '.wal')) {
           continue;
         }
-
-        const roomId = path.basename(fileName, '.json');
-        if (!isRoomId(roomId)) {
-          continue;
-        }
-
+        const filePath = path.join(this.historyDirPath, fileName);
         try {
-          const filePath = path.join(this.historyDirPath, fileName);
-          const stored = sanitizeStoredRoomHistory(roomId, JSON.parse(fs.readFileSync(filePath, 'utf8')));
-          if (stored.points.length > 0) {
-            this.history[roomId] = mergePoints(this.history[roomId] ?? [], stored.points);
+          if (extension === '.json') {
+            const stored = sanitizeStoredRoomHistory(roomId, JSON.parse(fs.readFileSync(filePath, 'utf8')));
+            if (stored.points.length > 0) {
+              this.history[roomId] = mergePoints(this.history[roomId] ?? [], stored.points);
+            }
+            if (stored.anchorName) {
+              this.anchorNames[roomId] = stored.anchorName;
+            }
+            continue;
           }
-          if (stored.anchorName) {
-            this.anchorNames[roomId] = stored.anchorName;
+          const records = fs.readFileSync(filePath, 'utf8').split(String.fromCharCode(10));
+          const parsed = records.map((line) => parseWalRecord(line)).filter((record): record is WalRecord => record !== undefined);
+          parsed.sort((left, right) => left.sequence - right.sequence);
+          const seen = new Set<number>();
+          for (const record of parsed) {
+            if (seen.has(record.sequence)) {
+              continue;
+            }
+            seen.add(record.sequence);
+            applyWalRecord(this.history, this.anchorNames, roomId, record);
+            this.roomSequences.set(roomId, Math.max(this.roomSequences.get(roomId) ?? 0, record.sequence));
           }
+          const queue = this.getRoomQueue(roomId);
+          queue.lastPersistedSequence = this.roomSequences.get(roomId) ?? 0;
         } catch {
           // Ignore one broken room file without preventing other rooms from loading.
         }
       }
     } catch {
-      // Disk history is best-effort; monitoring should still work if local files are unreadable.
+      // Monitoring continues with memory-only history when the storage directory is unavailable.
+      this.persistenceState = 'degraded';
     }
   }
 
-  private migrateLegacyGlobalState(): void {
-    const legacyHistory = sanitizeHistory(this.storage.get<unknown>(ONLINE_HISTORY_STORAGE_KEY, {}));
-    const changedRoomIds = new Set<string>();
+  private migrateLegacyGlobalState(): Promise<void> {
+    if (this.storage.get<boolean>(ONLINE_HISTORY_MIGRATION_KEY, false)) {
+      return Promise.resolve();
+    }
 
+    const legacyHistory = sanitizeHistory(this.storage.get<unknown>(ONLINE_HISTORY_STORAGE_KEY, {}));
     for (const [roomId, points] of Object.entries(legacyHistory)) {
       this.history[roomId] = mergePoints(this.history[roomId] ?? [], points);
-      changedRoomIds.add(roomId);
+      this.roomSequences.set(roomId, points.length);
+      if (this.historyDirPath) {
+        this.persistRoomCheckpointSync(roomId);
+      }
     }
 
-    void this.persistChangedRooms(changedRoomIds);
+    const migrationWrites: Promise<void>[] = [];
+    if (!this.historyDirPath && Object.keys(legacyHistory).length > 0) {
+      migrationWrites.push(Promise.resolve(this.storage.update(ONLINE_HISTORY_STORAGE_KEY, cloneHistory(this.history))));
+    }
+    migrationWrites.push(Promise.resolve(this.storage.update(ONLINE_HISTORY_MIGRATION_KEY, true)));
+    return Promise.all(migrationWrites).then(
+      () => undefined,
+      (error) => {
+        this.persistenceState = 'degraded';
+        this.lastPersistenceError = error instanceof Error ? error.message : String(error);
+      }
+    );
   }
 
-  private async persistChangedRooms(roomIds: ReadonlySet<string>): Promise<void> {
-    if (roomIds.size === 0) {
+  private getRoomQueue(roomId: string): RoomPersistenceQueue {
+    const existing = this.roomQueues.get(roomId);
+    if (existing) {
+      return existing;
+    }
+    const queue: RoomPersistenceQueue = {
+      records: [],
+      lastPersistedSequence: this.roomSequences.get(roomId) ?? 0,
+      failedWrites: 0
+    };
+    this.roomQueues.set(roomId, queue);
+    return queue;
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) {
       return;
     }
-
-    if (!this.historyDirPath) {
-      try {
-        await this.storage.update(ONLINE_HISTORY_STORAGE_KEY, cloneHistory(this.history));
-      } catch {
-        // Keep in-memory samples even if VSCode state persistence fails.
+    const nowMs = Date.now();
+    let delayMs = ONLINE_HISTORY_FLUSH_INTERVAL_MS;
+    for (const queue of this.roomQueues.values()) {
+      if (queue.records.length === 0 || !queue.pendingSince) {
+        continue;
       }
-      return;
+      delayMs = Math.min(delayMs, Math.max(0, ONLINE_HISTORY_MAX_PENDING_AGE_MS - (nowMs - queue.pendingSince)));
+    }
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      void this.flush().catch(() => {
+        this.scheduleFlush();
+      });
+    }, delayMs);
+  }
+
+  private async flushRooms(roomIds: ReadonlySet<string>): Promise<void> {
+    await Promise.all(Array.from(roomIds, (roomId) => this.flushRoom(roomId)));
+  }
+
+  private async flushRoom(roomId: string): Promise<void> {
+    const queue = this.getRoomQueue(roomId);
+    if (queue.processing) {
+      return queue.processing;
     }
 
+    const task = (async () => {
+      while (queue.records.length > 0) {
+        const batch = queue.records.splice(0);
+        try {
+          await this.appendWalBatch(roomId, batch);
+          queue.lastPersistedSequence = Math.max(queue.lastPersistedSequence, ...batch.map((record) => record.sequence));
+          queue.pendingSince = queue.records.length > 0 ? queue.pendingSince : undefined;
+          if (queue.lastPersistedSequence > 0 && queue.lastPersistedSequence % ONLINE_HISTORY_COMPACTION_RECORDS === 0) {
+            await this.compactRoom(roomId);
+          }
+        } catch (error) {
+          queue.records.unshift(...batch);
+          queue.pendingSince ??= Date.now();
+          queue.failedWrites += 1;
+          queue.lastError = error instanceof Error ? error.message : String(error);
+          this.persistenceState = 'failed';
+          this.lastPersistenceError = queue.lastError;
+          throw error;
+        }
+      }
+      if (this.persistenceState !== 'healthy' && this.getPersistenceStatus().pendingRooms === 0) {
+        this.persistenceState = 'healthy';
+        this.lastPersistenceError = undefined;
+      }
+    })();
+
+    queue.processing = task;
     try {
-      fs.mkdirSync(this.historyDirPath, { recursive: true });
-      for (const roomId of roomIds) {
-        this.persistRoom(roomId);
-      }
-    } catch {
-      // Keep in-memory samples even if local persistence fails.
+      await task;
+    } finally {
+      queue.processing = undefined;
     }
   }
 
-  private persistRoom(roomId: string): void {
+  private async appendWalBatch(roomId: string, records: readonly WalRecord[]): Promise<void> {
+    if (records.length === 0) {
+      return;
+    }
+    if (!this.historyDirPath) {
+      await this.storage.update(ONLINE_HISTORY_STORAGE_KEY, cloneHistory(this.history));
+      return;
+    }
+
+    await fsPromises.mkdir(this.historyDirPath, { recursive: true });
+    const walPath = path.join(this.historyDirPath, roomId + '.wal');
+    const handle = await fsPromises.open(walPath, 'a');
+    try {
+      await handle.writeFile(records.map((record) => JSON.stringify(record)).join(String.fromCharCode(10)) + String.fromCharCode(10), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async compactRoom(roomId: string): Promise<void> {
     if (!this.historyDirPath || !isRoomId(roomId)) {
       return;
     }
+    const filePath = path.join(this.historyDirPath, roomId + '.json');
+    const tempFilePath = filePath + '.tmp';
+    const handle = await fsPromises.open(tempFilePath, 'w');
+    try {
+      await handle.writeFile(JSON.stringify(serializeStoredRoomHistory(roomId, this.history[roomId] ?? [], this.anchorNames[roomId])), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fsPromises.rename(tempFilePath, filePath);
+    const walPath = path.join(this.historyDirPath, roomId + '.wal');
+    const walHandle = await fsPromises.open(walPath, 'w');
+    try {
+      await walHandle.sync();
+    } finally {
+      await walHandle.close();
+    }
+  }
 
-    const filePath = path.join(this.historyDirPath, `${roomId}.json`);
-    const tempFilePath = `${filePath}.tmp`;
-    fs.writeFileSync(
-      tempFilePath,
-      JSON.stringify(serializeStoredRoomHistory(roomId, this.history[roomId] ?? [], this.anchorNames[roomId])),
-      'utf8'
-    );
+  private persistRoomCheckpointSync(roomId: string): void {
+    if (!this.historyDirPath || !isRoomId(roomId)) {
+      return;
+    }
+    fs.mkdirSync(this.historyDirPath, { recursive: true });
+    const filePath = path.join(this.historyDirPath, roomId + '.json');
+    const tempFilePath = filePath + '.tmp';
+    fs.writeFileSync(tempFilePath, JSON.stringify(serializeStoredRoomHistory(roomId, this.history[roomId] ?? [], this.anchorNames[roomId])), 'utf8');
+    try {
+      const handle = fs.openSync(tempFilePath, 'r+');
+      try {
+        fs.fsyncSync(handle);
+      } finally {
+        fs.closeSync(handle);
+      }
+    } catch {
+      // Some Windows file systems do not allow fsync on a newly created temp file.
+    }
     fs.renameSync(tempFilePath, filePath);
+  }
+
+  async flush(): Promise<void> {
+    await this.ready;
+    const roomIds = new Set(this.roomQueues.keys());
+    await this.flushRooms(roomIds);
+    if (this.getPersistenceStatus().pendingRooms > 0) {
+      throw new Error('history queue is not empty');
+    }
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+  }
+
+  getPersistenceStatus(nowMs = Date.now()): PersistenceStatus {
+    let enqueuedSequence = 0;
+    let lastPersistedSequence = 0;
+    let pendingAgeMs = 0;
+    let pendingRooms = 0;
+    let failedWrites = 0;
+    for (const [roomId, queue] of this.roomQueues) {
+      const sequence = this.roomSequences.get(roomId) ?? 0;
+      enqueuedSequence += sequence;
+      lastPersistedSequence += queue.lastPersistedSequence;
+      failedWrites += queue.failedWrites;
+      if (queue.records.length > 0 || queue.processing) {
+        pendingRooms += 1;
+        pendingAgeMs = Math.max(pendingAgeMs, queue.pendingSince ? Math.max(0, nowMs - queue.pendingSince) : 0);
+      }
+    }
+    const state = this.persistenceState === 'healthy' && pendingAgeMs >= ONLINE_HISTORY_MAX_PENDING_AGE_MS
+      ? 'degraded'
+      : this.persistenceState;
+    return {
+      state,
+      enqueuedSequence,
+      lastPersistedSequence,
+      pendingAgeMs,
+      pendingRooms,
+      failedWrites,
+      ...(this.lastPersistenceError ? { lastError: this.lastPersistenceError } : {})
+    };
+  }
+
+  async dispose(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    await this.flush();
+  }
+}
+
+
+
+function createWalRecord(sequence: number, timestampMs: number, online: number | null, anchorName?: string): WalRecord {
+  const payload = {
+    version: ONLINE_HISTORY_WAL_VERSION,
+    sequence,
+    timestampMs,
+    online,
+    ...(anchorName ? { anchorName } : {})
+  };
+  return {
+    ...payload,
+    checksum: createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+  };
+}
+
+function parseWalRecord(line: string): WalRecord | undefined {
+  if (!line.trim()) {
+    return undefined;
+  }
+  try {
+    const value = JSON.parse(line) as Partial<WalRecord>;
+    const sequence = value.sequence;
+    const timestampMs = value.timestampMs;
+    const online = value.online;
+    const checksum = value.checksum;
+    if (
+      value.version !== ONLINE_HISTORY_WAL_VERSION ||
+      typeof sequence !== 'number' ||
+      !Number.isSafeInteger(sequence) ||
+      sequence <= 0 ||
+      typeof timestampMs !== 'number' ||
+      !Number.isFinite(timestampMs) ||
+      (online !== null && (typeof online !== 'number' || !Number.isFinite(online) || online < 0)) ||
+      typeof checksum !== 'string'
+    ) {
+      return undefined;
+    }
+    const payload = {
+      version: ONLINE_HISTORY_WAL_VERSION,
+      sequence,
+      timestampMs,
+      online,
+      ...(typeof value.anchorName === 'string' ? { anchorName: value.anchorName } : {})
+    };
+    const expected = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    if (expected !== checksum) {
+      return undefined;
+    }
+    return {
+      ...payload,
+      checksum
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function applyWalRecord(
+  history: OnlineViewerHistory,
+  anchorNames: Record<string, string>,
+  roomId: string,
+  record: WalRecord
+): void {
+  history[roomId] = mergePoints(history[roomId] ?? [], [[record.timestampMs, record.online]]);
+  const anchorName = sanitizeAnchorName(roomId, record.anchorName);
+  if (anchorName) {
+    anchorNames[roomId] = anchorName;
   }
 }
 

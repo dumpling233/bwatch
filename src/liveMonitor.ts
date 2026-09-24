@@ -6,9 +6,11 @@ export interface LiveMonitorNotifier {
 }
 
 interface OnlineHistoryRecorder {
+  readonly ready?: Promise<void>;
   getHistory(nowMs?: number): OnlineViewerHistory;
   getHistoryForRooms?(roomIds: readonly string[], nowMs?: number): OnlineViewerHistory;
   record(rooms: MonitorSnapshot['rooms'], timestampMs?: number): Promise<OnlineViewerHistory>;
+  flush?(): Promise<void>;
   pruneRooms(roomIds: readonly string[], nowMs?: number): Promise<OnlineViewerHistory>;
 }
 
@@ -21,9 +23,13 @@ const emptyHistoryRecorder: OnlineHistoryRecorder = {
 export class LiveMonitor {
   private snapshot: MonitorSnapshot;
   private refreshPromise: Promise<void> | null = null;
-  private timer: ReturnType<typeof setInterval> | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<(snapshot: MonitorSnapshot) => void>();
   private previousLiveStates = new Map<string, boolean>();
+  private settingsRevision = 0;
+  private snapshotRevision = 0;
+  private refreshQueued = false;
+  private disposed = false;
 
   constructor(
     private readonly client: BilibiliLiveClient,
@@ -36,17 +42,23 @@ export class LiveMonitor {
       settings,
       loading: false,
       lastRefreshAt: null,
-      onlineHistory: this.getHistoryForRooms(settings.rooms)
+      onlineHistory: this.getHistoryForRooms(settings.rooms),
+      revision: this.snapshotRevision
     };
     this.restartPolling();
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = undefined;
     }
     this.listeners.clear();
+    const flush = this.historyRecorder.flush;
+    if (flush) {
+      void flush.call(this.historyRecorder).catch(() => undefined);
+    }
   }
 
   onDidChange(listener: (snapshot: MonitorSnapshot) => void): () => void {
@@ -60,48 +72,77 @@ export class LiveMonitor {
   }
 
   updateSettings(settings: MonitorSettings): void {
+    if (this.disposed) {
+      return;
+    }
     this.settings = settings;
+    this.settingsRevision += 1;
     const onlineHistory = this.getHistoryForRooms(settings.rooms);
     this.snapshot = {
       ...this.snapshot,
       settings,
       rooms: this.snapshot.rooms.filter((room) => settings.rooms.includes(room.roomId)),
-      onlineHistory
+      onlineHistory,
+      revision: ++this.snapshotRevision
     };
     this.emit();
     this.restartPolling();
     void this.historyRecorder.pruneRooms(settings.rooms).then((prunedHistory) => {
+      if (this.disposed) {
+        return;
+      }
       this.snapshot = {
         ...this.snapshot,
-        onlineHistory: prunedHistory
+        onlineHistory: prunedHistory,
+        revision: ++this.snapshotRevision
       };
       this.emit();
-    });
+    }).catch(() => undefined);
     void this.refresh();
   }
 
   async refresh(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     if (this.refreshPromise) {
-      return this.refreshPromise;
+      this.refreshQueued = true;
+      await this.refreshPromise.catch(() => undefined);
+      return;
     }
 
-    this.refreshPromise = this.refreshInternal().finally(() => {
+    const revision = this.settingsRevision;
+    const task = this.refreshInternal(revision);
+    this.refreshPromise = task.finally(() => {
       this.refreshPromise = null;
+      if (this.refreshQueued && !this.disposed) {
+        this.refreshQueued = false;
+        void this.refresh();
+      } else {
+        this.schedulePolling();
+      }
     });
     return this.refreshPromise;
   }
 
-  private async refreshInternal(): Promise<void> {
+  private async refreshInternal(expectedRevision: number): Promise<void> {
+    if (this.disposed || expectedRevision !== this.settingsRevision) {
+      return;
+    }
     if (this.settings.rooms.length === 0) {
       const nowMs = Date.now();
       const onlineHistory = await this.historyRecorder.pruneRooms([], nowMs);
+      if (this.disposed || expectedRevision !== this.settingsRevision) {
+        return;
+      }
       this.snapshot = {
         rooms: [],
         settings: this.settings,
         loading: false,
         lastRefreshAt: nowMs,
         onlineHistory,
-        message: '请添加 B站直播间房间号'
+        message: '\u8bf7\u6dfb\u52a0 B\u7ad9\u76f4\u64ad\u95f4\u623f\u95f4\u53f7',
+        revision: ++this.snapshotRevision
       };
       this.emit();
       return;
@@ -110,21 +151,38 @@ export class LiveMonitor {
     this.snapshot = {
       ...this.snapshot,
       loading: true,
-      message: undefined
+      message: undefined,
+      revision: ++this.snapshotRevision
     };
     this.emit();
 
+    if (this.historyRecorder.ready) {
+      await this.historyRecorder.ready;
+    }
     const rooms = await this.client.fetchRooms(this.settings.rooms, Date.now(), this.settings.dataRefresh);
+    if (this.disposed || expectedRevision !== this.settingsRevision) {
+      return;
+    }
     this.handleLiveStartNotifications(rooms);
     const nowMs = Date.now();
-    const onlineHistory = await this.historyRecorder.record(rooms, nowMs);
+    let onlineHistory: OnlineViewerHistory;
+    let persistenceError: string | undefined;
+    try {
+      onlineHistory = await this.historyRecorder.record(rooms, nowMs);
+    } catch (error) {
+      onlineHistory = this.getHistoryForRooms(this.settings.rooms, nowMs);
+      const detail = error instanceof Error ? error.message : String(error);
+      persistenceError = 'history persistence failed: ' + detail;
+    }
 
     this.snapshot = {
       rooms,
       settings: this.settings,
       loading: false,
       lastRefreshAt: nowMs,
-      onlineHistory
+      onlineHistory,
+      ...(persistenceError ? { message: persistenceError } : {}),
+      revision: ++this.snapshotRevision
     };
     this.emit();
   }
@@ -146,16 +204,19 @@ export class LiveMonitor {
 
   private restartPolling(): void {
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = undefined;
     }
+    this.schedulePolling();
+  }
 
-    if (!this.settings.autoRefreshEnabled) {
+  private schedulePolling(): void {
+    if (this.disposed || !this.settings.autoRefreshEnabled || this.refreshPromise) {
       return;
     }
-
-    this.timer = setInterval(() => {
-      void this.refresh();
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      void this.refresh().catch(() => undefined);
     }, this.settings.autoRefreshIntervalSeconds * 1000);
   }
 
@@ -169,7 +230,6 @@ export class LiveMonitor {
     if (this.historyRecorder.getHistoryForRooms) {
       return this.historyRecorder.getHistoryForRooms(roomIds, nowMs);
     }
-
     return filterHistoryByRooms(this.historyRecorder.getHistory(nowMs), roomIds);
   }
 }

@@ -46,7 +46,10 @@ export interface WebviewActions {
 
 export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
+  private viewDisposables: vscode.Disposable[] = [];
   private latestSnapshot: MonitorSnapshot;
+  private visible = false;
+  private lastSentRevision = -1;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -56,31 +59,73 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
     this.latestSnapshot = initialSnapshot;
   }
 
+  dispose(): void {
+    this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
+    this.view = undefined;
+    this.visible = false;
+  }
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
     this.view = webviewView;
+    this.visible = webviewView.visible;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.extensionUri]
     };
     webviewView.webview.html = this.getHtml(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
-      void this.handleMessage(message);
-    });
-    this.update(this.latestSnapshot);
+    this.viewDisposables.push(
+      webviewView.onDidChangeVisibility(() => {
+        this.visible = webviewView.visible;
+        if (this.visible) {
+          this.lastSentRevision = -1;
+          this.postLatestSnapshot();
+        }
+      }),
+      webviewView.onDidDispose(() => {
+        this.visible = false;
+        this.view = undefined;
+        this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
+      }),
+      webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
+        void this.handleMessage(message).catch(() => undefined);
+      })
+    );
+    this.postLatestSnapshot();
   }
 
   update(snapshot: MonitorSnapshot): void {
     this.latestSnapshot = snapshot;
-    void this.view?.webview.postMessage({
+    if (!this.visible || !this.view) {
+      return;
+    }
+    this.postLatestSnapshot();
+  }
+
+  private postLatestSnapshot(): void {
+    const revision = this.latestSnapshot.revision ?? 0;
+    if (revision === this.lastSentRevision) {
+      return;
+    }
+    this.lastSentRevision = revision;
+    this.postMessage({
       type: 'snapshot',
-      snapshot: serializeSnapshot(snapshot)
+      snapshot: serializeSnapshot(this.latestSnapshot)
     });
+  }
+
+  private postMessage(message: unknown): void {
+    if (!this.visible || !this.view) {
+      return;
+    }
+    void this.view.webview.postMessage(message).then(undefined, () => undefined);
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
     switch (message.type) {
       case 'ready':
-        this.update(this.latestSnapshot);
+        this.lastSentRevision = -1;
+        this.postLatestSnapshot();
         break;
       case 'refresh':
         this.actions.refresh();
@@ -141,7 +186,7 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
 
   private handleHistoryDates(requestId: number): void {
     try {
-      void this.view?.webview.postMessage({
+      this.postMessage({
         type: 'historyDates',
         requestId,
         dates: this.actions.getHistoryDates()

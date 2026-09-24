@@ -26,6 +26,7 @@ import { RoomGroup, RoomSearchResult } from './types';
 const CONFIG_SECTION = 'bwatch';
 const HISTORY_SITE_EXPORT_ROOT_KEY = 'bwatch.historySiteExportRoot.v1';
 const DANMAKU_STATUS_BAR_ENABLED_KEY = 'bwatch.danmakuStatusBar.enabled';
+let activeHistoryStore: OnlineHistoryStore | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   let networkContext = createNetworkContext();
@@ -41,6 +42,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.globalState.get<boolean>(DANMAKU_STATUS_BAR_ENABLED_KEY, true)
   );
   const historyStore = new OnlineHistoryStore(context.globalState, context.globalStorageUri.fsPath);
+  activeHistoryStore = historyStore;
   const monitor = new LiveMonitor(client, getSettings(), {
     notifyLiveStart(roomId, anchorName, title) {
       const displayName = anchorName || roomId;
@@ -100,10 +102,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('bwatch.liveMonitor', provider, {
-      webviewOptions: { retainContextWhenHidden: true }
+      webviewOptions: { retainContextWhenHidden: false }
     }),
     vscode.window.registerWebviewViewProvider('bwatch.danmaku', danmakuProvider, {
-      webviewOptions: { retainContextWhenHidden: true }
+      webviewOptions: { retainContextWhenHidden: false }
     }),
     vscode.commands.registerCommand('bwatch.refresh', () => monitor.refresh()),
     vscode.commands.registerCommand('bwatch.addRoom', () => showAddRoomInput(client)),
@@ -133,6 +135,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     danmakuProvider,
     danmakuStatusBar,
+    provider,
     { dispose: () => monitor.dispose() },
     { dispose: () => danmakuSession.dispose() }
   );
@@ -144,7 +147,10 @@ export function activate(context: vscode.ExtensionContext): void {
   void monitor.refresh();
 }
 
-export function deactivate(): void {}
+export async function deactivate(): Promise<void> {
+  await activeHistoryStore?.flush();
+  activeHistoryStore = undefined;
+}
 
 function getSettings() {
   return readMonitorSettings(vscode.workspace.getConfiguration(CONFIG_SECTION));

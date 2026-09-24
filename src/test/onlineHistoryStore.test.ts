@@ -68,6 +68,7 @@ test('OnlineHistoryStore persists samples to local room files', async (t) => {
   const firstStore = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
 
   await firstStore.record([room('100', 99)], 1000);
+  await firstStore.flush();
 
   const secondStore = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
   assert.deepEqual(secondStore.getHistoryForRooms(['100'], 2000), {
@@ -98,6 +99,7 @@ test('OnlineHistoryStore restores stored anchor names from local room files', as
   const firstStore = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
 
   await firstStore.record([room('100', 99, '主播甲')], timestamp);
+  await firstStore.flush();
 
   const secondStore = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
   const history = secondStore.queryDateHistory('2026-08-13', 8 * 60, 9 * 60);
@@ -267,6 +269,47 @@ test('OnlineHistoryStore rejects ranges longer than two days or with non-adjacen
 
   assert.deepEqual(store.queryDateRangeHistory(['2026-08-13', '2026-08-15']).dates, []);
   assert.deepEqual(store.queryDateRangeHistory(['2026-08-13', '2026-08-14', '2026-08-15']).dates, []);
+});
+
+
+test('OnlineHistoryStore recovers WAL records with duplicate, out-of-order, and torn tail', async (t) => {
+  const storageRootPath = createTempDir(t);
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+  await store.record([room('100', 10)], 1000);
+  await store.record([room('100', null)], 2000);
+  await store.flush();
+
+  const walPath = path.join(storageRootPath, 'online-history', '100.wal');
+  const lines = fs.readFileSync(walPath, 'utf8').trim().split(String.fromCharCode(10));
+  assert.equal(lines.length, 2);
+  fs.writeFileSync(walPath, [lines[1], lines[0], lines[1], '{"version":1'].join(String.fromCharCode(10)) + String.fromCharCode(10));
+
+  const restored = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+  assert.deepEqual(restored.getRoomHistory('100'), [
+    [1000, 10],
+    [2000, null]
+  ]);
+});
+
+test('OnlineHistoryStore queues samples before the scheduled flush and reports aged writes', async (t) => {
+  const store = new OnlineHistoryStore(new FakeMemento(), createTempDir(t));
+  await store.record([room('100', 10)], 1000);
+  const pending = store.getPersistenceStatus();
+  assert.equal(pending.pendingRooms, 1);
+  assert.equal(pending.lastPersistedSequence, 0);
+  assert.equal(store.getPersistenceStatus(Date.now() + 5_001).state, 'degraded');
+  await store.flush();
+  assert.equal(store.getPersistenceStatus().pendingRooms, 0);
+});
+
+test('OnlineHistoryStore reports a clean persistence queue after flush', async (t) => {
+  const store = new OnlineHistoryStore(new FakeMemento(), createTempDir(t));
+  await store.record([room('100', 10)], 1000);
+  await store.flush();
+  const status = store.getPersistenceStatus();
+  assert.equal(status.state, 'healthy');
+  assert.equal(status.pendingRooms, 0);
+  assert.equal(status.enqueuedSequence, status.lastPersistedSequence);
 });
 
 function createTempDir(t: TestContext): string {

@@ -109,6 +109,7 @@ export interface MonitorSnapshot {
   lastRefreshAt: number | null;
   onlineHistory: OnlineViewerHistory;
   message?: string;
+  revision?: number;
 }
 export interface LiveSessionSummary {
   roomId: string;

@@ -50,7 +50,10 @@ type DanmakuWebviewMessage =
 
 export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
+  private viewDisposables: vscode.Disposable[] = [];
+  private visible = false;
   private rooms: DanmakuRoomOption[];
+  private roomsKey = '';
   private pendingRoomSelection?: string;
   private readonly unsubscribe: () => void;
   private pendingMessages: DanmakuMessage[] = [];
@@ -68,19 +71,41 @@ export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscod
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
     this.view = webviewView;
+    this.visible = webviewView.visible;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.extensionUri]
     };
     webviewView.webview.html = this.getHtml(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage((message: DanmakuWebviewMessage) => this.handleMessage(message));
+    this.viewDisposables.push(
+      webviewView.onDidChangeVisibility(() => {
+        this.visible = webviewView.visible;
+        if (this.visible) {
+          this.postInitialState();
+        }
+      }),
+      webviewView.onDidDispose(() => {
+        this.visible = false;
+        this.view = undefined;
+        this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
+      }),
+      webviewView.webview.onDidReceiveMessage((message: DanmakuWebviewMessage) => this.handleMessage(message))
+    );
     this.postInitialState();
   }
 
   updateRooms(rooms: readonly LiveRoomStatus[]): void {
-    this.rooms = mapRoomOptions(rooms);
-    void this.view?.webview.postMessage({ type: 'rooms', rooms: this.rooms });
+    const nextRooms = mapRoomOptions(rooms);
+    const nextKey = nextRooms.map((room) => room.roomId + ':' + room.anchorName + ':' + room.status).join('|');
+    this.rooms = nextRooms;
+    if (!this.visible || nextKey === this.roomsKey) {
+      this.roomsKey = nextKey;
+      return;
+    }
+    this.roomsKey = nextKey;
+    this.postMessage({ type: 'rooms', rooms: this.rooms });
   }
 
   connectRoom(roomId: string): void {
@@ -95,6 +120,9 @@ export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscod
 
   dispose(): void {
     this.pendingMessages = [];
+    this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
+    this.view = undefined;
+    this.visible = false;
     this.unsubscribe();
   }
 
@@ -129,6 +157,9 @@ export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscod
       this.postSnapshot(event.snapshot, false);
       return;
     }
+    if (!this.visible) {
+      return;
+    }
     if (event.type === 'message') {
       this.pendingMessages.push(event.message);
       if (!this.messageFlushQueued) {
@@ -140,7 +171,7 @@ export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscod
     if (event.type === 'clear') {
       this.pendingMessages = [];
     }
-    void this.view?.webview.postMessage(event);
+    this.postMessage(event);
   }
 
   private flushPendingMessages(): void {
@@ -170,14 +201,24 @@ export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscod
     );
   }
 
+  private postMessage(message: unknown): void {
+    if (!this.visible || !this.view) {
+      return;
+    }
+    void this.view.webview.postMessage(message).then(undefined, () => undefined);
+  }
+
   private postInitialState(): void {
-    void this.view?.webview.postMessage({ type: 'rooms', rooms: this.rooms });
+    if (!this.visible || !this.view) {
+      return;
+    }
+    this.postMessage({ type: 'rooms', rooms: this.rooms });
     this.postSnapshot(this.session.getSnapshot());
     this.postPendingRoomSelection();
   }
 
   private postPendingRoomSelection(): void {
-    if (!this.view || !this.pendingRoomSelection) {
+    if (!this.visible || !this.view || !this.pendingRoomSelection) {
       return;
     }
     const roomId = this.pendingRoomSelection;
@@ -186,8 +227,11 @@ export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscod
   }
 
   private postSnapshot(snapshot: DanmakuSnapshot, includeMessages = true): void {
+    if (!this.visible || !this.view) {
+      return;
+    }
     if (includeMessages) {
-      void this.view?.webview.postMessage({ type: 'snapshot', snapshot });
+      this.postMessage({ type: 'snapshot', snapshot });
       return;
     }
     const statusSnapshot = {
@@ -198,7 +242,7 @@ export class DanmakuWebviewProvider implements vscode.WebviewViewProvider, vscod
       reconnectAttempt: snapshot.reconnectAttempt,
       error: snapshot.error
     };
-    void this.view?.webview.postMessage({ type: 'snapshot', snapshot: statusSnapshot });
+    this.postMessage({ type: 'snapshot', snapshot: statusSnapshot });
   }
 
   private getHtml(webview: vscode.Webview): string {

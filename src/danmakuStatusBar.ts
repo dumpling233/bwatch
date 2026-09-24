@@ -1,5 +1,5 @@
 import type * as vscode from 'vscode';
-import type { DanmakuSnapshot } from './danmakuClient';
+import type { DanmakuSessionEvent, DanmakuSnapshot } from './danmakuClient';
 import type { DanmakuMessage } from './danmakuProtocol';
 
 const STATUS_BAR_CONTENT_LIMIT = 48;
@@ -39,7 +39,7 @@ const EMOJI_TEXT_ALIASES: Readonly<Record<string, string>> = Object.freeze({
 
 interface DanmakuStatusSession {
   getSnapshot(): DanmakuSnapshot;
-  onDidEvent(listener: () => void): () => void;
+  onDidEvent(listener: (event?: DanmakuSessionEvent) => void): () => void;
 }
 
 type DanmakuStatusItem = Pick<
@@ -49,6 +49,7 @@ type DanmakuStatusItem = Pick<
 
 export class DanmakuStatusBar implements vscode.Disposable {
   private readonly unsubscribe: () => void;
+  private renderTimer: ReturnType<typeof setTimeout> | undefined;
   private showEmoji = true;
 
   constructor(
@@ -57,11 +58,15 @@ export class DanmakuStatusBar implements vscode.Disposable {
     private enabled = true
   ) {
     this.item.name = 'BWatch 最新弹幕';
-    this.unsubscribe = this.session.onDidEvent(() => this.render(this.session.getSnapshot()));
+    this.unsubscribe = this.session.onDidEvent((event) => this.scheduleRender(event));
     this.render(this.session.getSnapshot());
   }
 
   dispose(): void {
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = undefined;
+    }
     this.unsubscribe();
     this.item.dispose();
   }
@@ -78,6 +83,24 @@ export class DanmakuStatusBar implements vscode.Disposable {
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     this.render(this.session.getSnapshot());
+  }
+
+  private scheduleRender(event?: DanmakuSessionEvent): void {
+    if (!event || event.type !== 'message') {
+      if (this.renderTimer) {
+        clearTimeout(this.renderTimer);
+        this.renderTimer = undefined;
+      }
+      this.render(this.session.getSnapshot());
+      return;
+    }
+    if (this.renderTimer) {
+      return;
+    }
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = undefined;
+      this.render(this.session.getSnapshot());
+    }, 150);
   }
 
   private render(snapshot: DanmakuSnapshot): void {

@@ -6,6 +6,7 @@ export const DANMAKU_HEARTBEAT_INTERVAL_MS = 30_000;
 const MAX_PACKET_BYTES = 16 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES = 32 * 1024 * 1024;
 const MAX_COMPRESSION_DEPTH = 5;
+const MAX_RECOVERY_SCAN_BYTES = 64 * 1024;
 
 export enum DanmakuOperation {
   Heartbeat = 2,
@@ -14,6 +15,14 @@ export enum DanmakuOperation {
   Auth = 7,
   AuthReply = 8
 }
+
+const VALID_OPERATIONS = new Set<number>([
+  DanmakuOperation.Heartbeat,
+  DanmakuOperation.HeartbeatReply,
+  DanmakuOperation.Message,
+  DanmakuOperation.Auth,
+  DanmakuOperation.AuthReply
+]);
 
 export enum DanmakuProtocolVersion {
   Json = 0,
@@ -199,7 +208,8 @@ export function parseDanmakuCommand(
 }
 
 function findNextPacketOffset(buffer: Buffer, startOffset: number): number | undefined {
-  for (let offset = startOffset; offset <= buffer.length - DANMAKU_HEADER_SIZE; offset += 1) {
+  const scanEnd = Math.min(buffer.length - DANMAKU_HEADER_SIZE, startOffset + MAX_RECOVERY_SCAN_BYTES);
+  for (let offset = startOffset; offset <= scanEnd; offset += 1) {
     const packetLength = buffer.readUInt32BE(offset);
     const headerLength = buffer.readUInt16BE(offset + 4);
     const protocolVersion = buffer.readUInt16BE(offset + 6);
@@ -210,13 +220,7 @@ function findNextPacketOffset(buffer: Buffer, startOffset: number): number | und
       packetLength <= MAX_PACKET_BYTES &&
       offset + packetLength <= buffer.length &&
       protocolVersion <= DanmakuProtocolVersion.Brotli &&
-      [
-        DanmakuOperation.Heartbeat,
-        DanmakuOperation.HeartbeatReply,
-        DanmakuOperation.Message,
-        DanmakuOperation.Auth,
-        DanmakuOperation.AuthReply
-      ].includes(operation)
+      VALID_OPERATIONS.has(operation)
     ) {
       return offset;
     }

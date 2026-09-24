@@ -150,3 +150,12 @@
 ### 图例批量显示控制
 
 总览走势图和历史走势图分别将图例隐藏状态传入同一套渲染器，并在图例顶部提供隐藏全部、全部显示操作；批量操作只修改对应图表的隐藏集合，不修改范围筛选、合计曲线配置或本地历史数据。
+
+
+## 性能与可靠性分层
+
+- 采集层、内存投影、持久化层和 Webview 投递层相互解耦。采集结果先进入内存历史，再异步进入每房间串行 WAL 队列；视图只接收带 revision 的最新投影。
+- 在线历史目录同时兼容旧 JSON 文件和新版本 WAL。WAL 记录按 sequence 去重、校验和恢复，批量追加后调用 FileHandle.sync；checkpoint 使用临时文件、同步和原子替换，旧 WAL 在 checkpoint 成功后清理。
+- OnlineHistoryStore.ready、flush() 和 getPersistenceStatus() 构成生命周期契约：初始化、正常停用和写盘故障均可被调用方观察，单房间失败不阻塞其他房间采集。
+- 监控刷新采用完成后调度和配置 revision 校验；慢请求、隐藏视图和 Webview DOM 渲染均不能改变计划采样数量。VSCode Webview provider 在隐藏状态只保留最新快照，可见时重新握手。
+- 第一阶段不引入 React/Lit、SQLite、原生依赖或 Worker；弹幕压缩/JSON 解析是否迁移 Worker 由后续 profiling 决定。

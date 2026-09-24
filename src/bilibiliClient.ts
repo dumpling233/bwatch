@@ -94,6 +94,10 @@ export class BilibiliLiveClient {
   private readonly fansCache = new Map<string, CachedNumber>();
   private readonly guardCache = new Map<string, CachedNumber>();
   private readonly onlineCache = new Map<string, CachedNumber>();
+  private readonly onlineInFlight = new Map<string, Promise<CachedFieldResult<number | null>>>();
+  private readonly guardInFlight = new Map<string, Promise<CachedFieldResult<GuardFleet | null>>>();
+  private readonly fansInFlight = new Map<string, Promise<CachedFieldResult<number | null>>>();
+  private readonly roomUids = new Map<string, number>();
   private baseInfoCache?: {
     roomIdsKey: string;
     payload: BilibiliBaseInfoResponse;
@@ -109,11 +113,13 @@ export class BilibiliLiveClient {
   ): Promise<LiveRoomStatus[]> {
     const uniqueRoomIds = [...new Set(roomIds)];
     if (uniqueRoomIds.length === 0) {
+      this.pruneRoomCaches([]);
       return [];
     }
 
     try {
       const payload = await this.getBaseInfo(uniqueRoomIds, nowMs, refreshSettings.baseInfoIntervalSeconds);
+      this.pruneRoomCaches(uniqueRoomIds, payload);
       const statuses = uniqueRoomIds.map((roomId) => normalizeRoomInfo(roomId, payload.data?.by_room_ids?.[roomId], nowMs));
 
       return mapWithConcurrency(
@@ -153,6 +159,65 @@ export class BilibiliLiveClient {
     }
   }
 
+  private pruneRoomCaches(roomIds: readonly string[], payload?: BilibiliBaseInfoResponse): void {
+    const activeRoomIds = new Set(roomIds);
+    for (const roomId of this.roomUids.keys()) {
+      if (!activeRoomIds.has(roomId)) {
+        const previousUid = this.roomUids.get(roomId);
+        this.removeRoomCache(roomId);
+        this.roomUids.delete(roomId);
+        if (previousUid !== undefined && !this.isUidActive(previousUid)) {
+          this.removeFanCache(previousUid);
+        }
+      }
+    }
+    for (const roomId of roomIds) {
+      const uid = payload?.data?.by_room_ids?.[roomId]?.uid;
+      if (!uid) {
+        continue;
+      }
+      const previousUid = this.roomUids.get(roomId);
+      if (previousUid !== undefined && previousUid !== uid) {
+        this.removeRoomCache(roomId);
+      }
+      this.roomUids.set(roomId, uid);
+      if (previousUid !== undefined && previousUid !== uid && !this.isUidActive(previousUid)) {
+        this.removeFanCache(previousUid);
+      }
+    }
+  }
+
+  private isUidActive(uid: number): boolean {
+    for (const activeUid of this.roomUids.values()) {
+      if (activeUid === uid) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private removeFanCache(uid: number): void {
+    const cacheKey = String(uid);
+    this.fansCache.delete(cacheKey);
+    this.fansInFlight.delete(cacheKey);
+  }
+  private removeRoomCache(roomId: string): void {
+    const prefix = roomId + ':';
+    for (const cache of [this.onlineCache, this.guardCache]) {
+      for (const key of cache.keys()) {
+        if (key.startsWith(prefix)) {
+          cache.delete(key);
+        }
+      }
+    }
+    for (const inFlight of [this.onlineInFlight, this.guardInFlight]) {
+      for (const key of inFlight.keys()) {
+        if (key.startsWith(prefix)) {
+          inFlight.delete(key);
+        }
+      }
+    }
+  }
   private async getBaseInfo(
     roomIds: readonly string[],
     nowMs: number,
@@ -263,21 +328,33 @@ export class BilibiliLiveClient {
     nowMs: number,
     intervalSeconds: number
   ): Promise<CachedFieldResult<number | null>> {
-    const cacheKey = `${roomId}:${uid}`;
+    const cacheKey = roomId + ':' + uid;
     const cached = this.onlineCache.get(cacheKey);
     if (cached && nowMs - cached.fetchedAt < intervalSeconds * 1000) {
+      this.onlineCache.delete(cacheKey);
+      this.onlineCache.set(cacheKey, cached);
       return { value: cached.value, stale: false, lastSuccessAt: cached.fetchedAt };
     }
-
-    const online = await this.requestOnlineViewerCount(roomId, uid);
-    if (online !== null) {
-      this.onlineCache.set(cacheKey, { value: online, fetchedAt: nowMs });
-      return { value: online, stale: false, lastSuccessAt: nowMs };
+    const existing = this.onlineInFlight.get(cacheKey);
+    if (existing) {
+      return existing;
     }
-
-    return cached
-      ? { value: cached.value, stale: true, lastSuccessAt: cached.fetchedAt }
-      : { value: null, stale: false };
+    const request = this.requestOnlineViewerCount(roomId, uid).then((online) => {
+      if (online !== null) {
+        this.onlineCache.delete(cacheKey);
+        this.onlineCache.set(cacheKey, { value: online, fetchedAt: nowMs });
+        trimCache(this.onlineCache);
+        return { value: online, stale: false, lastSuccessAt: nowMs };
+      }
+      const latest = this.onlineCache.get(cacheKey);
+      return latest
+        ? { value: latest.value, stale: true, lastSuccessAt: latest.fetchedAt }
+        : { value: null, stale: false };
+    }).finally(() => {
+      this.onlineInFlight.delete(cacheKey);
+    });
+    this.onlineInFlight.set(cacheKey, request);
+    return request;
   }
 
   private async requestOnlineViewerCount(roomId: string, uid: number): Promise<number | null> {
@@ -316,21 +393,33 @@ export class BilibiliLiveClient {
     nowMs = Date.now(),
     intervalSeconds = DEFAULT_DATA_REFRESH_SETTINGS.guardIntervalSeconds
   ): Promise<CachedFieldResult<GuardFleet | null>> {
-    const cacheKey = `${roomId}:${uid}`;
+    const cacheKey = roomId + ':' + uid;
     const cached = this.guardCache.get(cacheKey);
     if (cached && nowMs - cached.fetchedAt < intervalSeconds * 1000) {
+      this.guardCache.delete(cacheKey);
+      this.guardCache.set(cacheKey, cached);
       return { value: { total: cached.value }, stale: false, lastSuccessAt: cached.fetchedAt };
     }
-
-    const fleet = await this.requestGuardFleet(roomId, uid);
-    if (fleet) {
-      this.guardCache.set(cacheKey, { value: fleet.total, fetchedAt: nowMs });
-      return { value: fleet, stale: false, lastSuccessAt: nowMs };
+    const existing = this.guardInFlight.get(cacheKey);
+    if (existing) {
+      return existing;
     }
-
-    return cached
-      ? { value: { total: cached.value }, stale: true, lastSuccessAt: cached.fetchedAt }
-      : { value: null, stale: false };
+    const request = this.requestGuardFleet(roomId, uid).then((fleet) => {
+      if (fleet) {
+        this.guardCache.delete(cacheKey);
+        this.guardCache.set(cacheKey, { value: fleet.total, fetchedAt: nowMs });
+        trimCache(this.guardCache);
+        return { value: fleet, stale: false, lastSuccessAt: nowMs };
+      }
+      const latest = this.guardCache.get(cacheKey);
+      return latest
+        ? { value: { total: latest.value }, stale: true, lastSuccessAt: latest.fetchedAt }
+        : { value: null, stale: false };
+    }).finally(() => {
+      this.guardInFlight.delete(cacheKey);
+    });
+    this.guardInFlight.set(cacheKey, request);
+    return request;
   }
 
   private async getFansCount(
@@ -341,18 +430,30 @@ export class BilibiliLiveClient {
     const cacheKey = String(uid);
     const cached = this.fansCache.get(cacheKey);
     if (cached && nowMs - cached.fetchedAt < intervalSeconds * 1000) {
+      this.fansCache.delete(cacheKey);
+      this.fansCache.set(cacheKey, cached);
       return { value: cached.value, stale: false, lastSuccessAt: cached.fetchedAt };
     }
-
-    const fansCount = await this.requestFansCount(uid);
-    if (fansCount !== null) {
-      this.fansCache.set(cacheKey, { value: fansCount, fetchedAt: nowMs });
-      return { value: fansCount, stale: false, lastSuccessAt: nowMs };
+    const existing = this.fansInFlight.get(cacheKey);
+    if (existing) {
+      return existing;
     }
-
-    return cached
-      ? { value: cached.value, stale: true, lastSuccessAt: cached.fetchedAt }
-      : { value: null, stale: false };
+    const request = this.requestFansCount(uid).then((fansCount) => {
+      if (fansCount !== null) {
+        this.fansCache.delete(cacheKey);
+        this.fansCache.set(cacheKey, { value: fansCount, fetchedAt: nowMs });
+        trimCache(this.fansCache);
+        return { value: fansCount, stale: false, lastSuccessAt: nowMs };
+      }
+      const latest = this.fansCache.get(cacheKey);
+      return latest
+        ? { value: latest.value, stale: true, lastSuccessAt: latest.fetchedAt }
+        : { value: null, stale: false };
+    }).finally(() => {
+      this.fansInFlight.delete(cacheKey);
+    });
+    this.fansInFlight.set(cacheKey, request);
+    return request;
   }
 
   private async requestGuardFleet(roomId: string, uid: number): Promise<GuardFleet | null> {
@@ -412,6 +513,14 @@ export class BilibiliLiveClient {
     } catch {
       return null;
     }
+  }
+}
+
+function trimCache<T>(cache: Map<string, T>, maxEntries = 256): void {
+  while (cache.size > maxEntries) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest === undefined) return;
+    cache.delete(oldest);
   }
 }
 
