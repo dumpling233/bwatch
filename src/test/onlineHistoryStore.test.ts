@@ -141,6 +141,32 @@ test('OnlineHistoryStore keeps long-term files while recent snapshots are limite
   ]);
 });
 
+test('OnlineHistoryStore keeps long-term queries complete after trimming the memory projection', (t) => {
+  const storageRootPath = createTempDir(t);
+  const historyDirPath = path.join(storageRootPath, 'online-history');
+  fs.mkdirSync(historyDirPath, { recursive: true });
+  const nowMs = Date.now();
+  const points = Array.from({ length: 12_050 }, (_, index) => [
+    nowMs - (12_049 - index) * 60_000,
+    index % 2
+  ] as [number, number]);
+  fs.writeFileSync(
+    path.join(historyDirPath, '100.json'),
+    JSON.stringify({ version: 2, anchorName: '主播', points }),
+    'utf8'
+  );
+
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+  const completeHistory = store.getRoomHistory('100');
+  const recentHistory = store.getHistory()['100'] ?? [];
+  const dateSummary = store.getAvailableDates().reduce((total, item) => total + item.pointCount, 0);
+
+  assert.equal(completeHistory.length, points.length);
+  assert.ok(recentHistory.length < completeHistory.length);
+  assert.ok(recentHistory.length > 0);
+  assert.equal(dateSummary, points.length);
+});
+
 test('OnlineHistoryStore filters inactive rooms without deleting their long-term history', async (t) => {
   const storageRootPath = createTempDir(t);
   const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
@@ -199,6 +225,20 @@ test('OnlineHistoryStore migrates valid globalState history into local storage',
   });
 });
 
+test('OnlineHistoryStore keeps migration pending when its checkpoint cannot be written', (t) => {
+  const storageRootPath = createTempDir(t);
+  fs.writeFileSync(path.join(storageRootPath, 'online-history'), 'blocked', 'utf8');
+  const memento = new FakeMemento(new Map([
+    [ONLINE_HISTORY_STORAGE_KEY, { '100': [[1000, 10]] }]
+  ]));
+
+  const store = new OnlineHistoryStore(memento, storageRootPath);
+
+  assert.equal(memento.get('bwatch.onlineHistory.migrated.v2', false), false);
+  assert.equal(store.getPersistenceStatus().state, 'degraded');
+  assert.deepEqual(store.getRoomHistory('100'), [[1000, 10]]);
+});
+
 test('OnlineHistoryStore lists available local dates', async (t) => {
   const storageRootPath = createTempDir(t);
   const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
@@ -245,6 +285,24 @@ test('OnlineHistoryStore queries one local date time range', async (t) => {
   ]);
 });
 
+test('OnlineHistoryStore async history queries match synchronous results without blocking callers', async (t) => {
+  const storageRootPath = createTempDir(t);
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+  const firstPoint = new Date(2026, 7, 13, 8, 30, 0, 0).getTime();
+  const secondPoint = new Date(2026, 7, 13, 8, 31, 0, 0).getTime();
+
+  await store.record([room('100', 10, '主播甲')], firstPoint);
+  await store.record([room('100', null, '主播甲')], secondPoint);
+  await store.record([room('100', 0, '主播甲')], secondPoint + 60_000);
+
+  assert.deepEqual(await store.getAvailableDatesAsync(), store.getAvailableDates());
+  assert.deepEqual(
+    await store.queryDateRangeHistoryAsync(['2026-08-13'], 8 * 60, 9 * 60),
+    store.queryDateRangeHistory(['2026-08-13'], 8 * 60, 9 * 60)
+  );
+  assert.deepEqual(await store.getRoomSessionsAsync('100'), store.getRoomSessions('100'));
+});
+
 test('OnlineHistoryStore queries two adjacent local dates as one continuous range', async (t) => {
   const storageRootPath = createTempDir(t);
   const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
@@ -289,6 +347,7 @@ test('OnlineHistoryStore recovers WAL records with duplicate, out-of-order, and 
     [1000, 10],
     [2000, null]
   ]);
+  assert.doesNotMatch(fs.readFileSync(walPath, 'utf8'), /\{"version":1$/m);
 });
 
 test('OnlineHistoryStore queues samples before the scheduled flush and reports aged writes', async (t) => {
@@ -310,6 +369,28 @@ test('OnlineHistoryStore reports a clean persistence queue after flush', async (
   assert.equal(status.state, 'healthy');
   assert.equal(status.pendingRooms, 0);
   assert.equal(status.enqueuedSequence, status.lastPersistedSequence);
+});
+
+test('OnlineHistoryStore isolates one room write failure and retries it after recovery', async (t) => {
+  const storageRootPath = createTempDir(t);
+  const historyDirPath = path.join(storageRootPath, 'online-history');
+  const failedWalPath = path.join(historyDirPath, '100.wal');
+  fs.mkdirSync(failedWalPath, { recursive: true });
+  const store = new OnlineHistoryStore(new FakeMemento(), storageRootPath);
+
+  await store.record([room('100', 10), room('200', 20)], 1000);
+  await assert.rejects(() => store.flush());
+
+  assert.equal(store.getPersistenceStatus().state, 'failed');
+  assert.equal(store.getPersistenceStatus().pendingRooms, 1);
+  assert.ok(fs.existsSync(path.join(historyDirPath, '200.wal')));
+
+  fs.rmSync(failedWalPath, { recursive: true, force: true });
+  await store.flush();
+
+  assert.equal(store.getPersistenceStatus().state, 'healthy');
+  assert.equal(store.getPersistenceStatus().pendingRooms, 0);
+  assert.ok(fs.existsSync(failedWalPath));
 });
 
 function createTempDir(t: TestContext): string {

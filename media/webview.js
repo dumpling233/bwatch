@@ -92,6 +92,7 @@
   let currentHistoryDateRequestId = 0;
   let currentRoomSessionsRequestId = 0;
   let latestSnapshot = undefined;
+  let roomListLayoutSignature = '';
   let trendsExpanded = persistedState.trendsExpanded;
   let trendWindowMinutes = persistedState.trendWindowMinutes;
   let overviewTrendExpanded = persistedState.overviewTrendExpanded;
@@ -252,9 +253,7 @@
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'snapshot') {
-      latestSnapshot = message.snapshot;
-      render(message.snapshot);
-      refreshHistoryDatesAfterDateChange(message.snapshot);
+      applySnapshotEnvelope(message);
     }
     if (message.type === 'historyDates') {
       handleHistoryDates(message);
@@ -276,6 +275,76 @@
   }
   durationTicker = setInterval(updateDurationDisplays, 1000);
   vscode.postMessage({ type: 'ready' });
+
+  function applySnapshotEnvelope(message) {
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    let snapshot;
+    if (!message.mode || message.mode === 'full') {
+      snapshot = message.snapshot;
+    } else if (message.mode === 'patch') {
+      if (!latestSnapshot || latestSnapshot.revision !== message.baseRevision) {
+        vscode.postMessage({ type: 'ready' });
+        return;
+      }
+      if (!Number.isFinite(message.revision) || message.revision <= latestSnapshot.revision) {
+        return;
+      }
+      snapshot = mergeSnapshotPatch(latestSnapshot, message.patch || {}, message.revision);
+    } else {
+      return;
+    }
+
+    if (!snapshot || typeof snapshot !== 'object') {
+      return;
+    }
+    if (
+      latestSnapshot &&
+      Number.isFinite(snapshot.revision) &&
+      Number.isFinite(latestSnapshot.revision) &&
+      snapshot.revision < latestSnapshot.revision
+    ) {
+      return;
+    }
+    latestSnapshot = snapshot;
+    render(snapshot);
+    refreshHistoryDatesAfterDateChange(snapshot);
+  }
+
+  function mergeSnapshotPatch(previous, patch, revision) {
+    const next = { ...previous, revision };
+    if (Object.prototype.hasOwnProperty.call(patch, 'rooms')) next.rooms = patch.rooms;
+    if (Object.prototype.hasOwnProperty.call(patch, 'settings')) next.settings = patch.settings;
+    if (Object.prototype.hasOwnProperty.call(patch, 'loading')) next.loading = patch.loading;
+    if (Object.prototype.hasOwnProperty.call(patch, 'lastRefreshAt')) next.lastRefreshAt = patch.lastRefreshAt;
+    if (Object.prototype.hasOwnProperty.call(patch, 'lastRefreshText')) next.lastRefreshText = patch.lastRefreshText;
+    if (Object.prototype.hasOwnProperty.call(patch, 'message')) {
+      if (patch.message === null || patch.message === undefined) {
+        delete next.message;
+      } else {
+        next.message = patch.message;
+      }
+    }
+
+    const historyPatch = patch.onlineHistory;
+    if (historyPatch) {
+      const onlineHistory = { ...(previous.onlineHistory || {}) };
+      for (const [roomId, points] of Object.entries(historyPatch.replace || {})) {
+        onlineHistory[roomId] = Array.isArray(points) ? points.slice() : [];
+      }
+      for (const [roomId, points] of Object.entries(historyPatch.append || {})) {
+        const existing = Array.isArray(onlineHistory[roomId]) ? onlineHistory[roomId] : [];
+        onlineHistory[roomId] = existing.concat(Array.isArray(points) ? points : []);
+      }
+      for (const roomId of historyPatch.removeRoomIds || []) {
+        delete onlineHistory[roomId];
+      }
+      next.onlineHistory = onlineHistory;
+    }
+    return next;
+  }
 
   function requestHistoryDates() {
     currentHistoryDatesRequestId += 1;
@@ -633,24 +702,191 @@
       refreshStatusPill(snapshot)
     );
 
-    rooms.innerHTML = '';
+    const trendWindow = getTrendWindow(snapshot);
+    renderRoomList(snapshot, visibleRooms, trendWindow);
+  }
+
+  function renderRoomList(snapshot, visibleRooms, trendWindow) {
+    const signature = getRoomListLayoutSignature(snapshot, visibleRooms);
     rooms.className = `rooms mode-${displayMode}`;
+
     if (snapshot.rooms.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'empty';
-      empty.textContent = snapshot.message || '暂无直播间';
-      rooms.append(empty);
+      const empty = rooms.querySelector('.empty');
+      if (!empty || roomListLayoutSignature !== signature) {
+        const nextEmpty = document.createElement('div');
+        nextEmpty.className = 'empty';
+        nextEmpty.textContent = snapshot.message || '暂无直播间';
+        rooms.replaceChildren(nextEmpty);
+      } else {
+        empty.textContent = snapshot.message || '暂无直播间';
+      }
+      roomListLayoutSignature = signature;
       return;
     }
 
-    const trendWindow = getTrendWindow(snapshot);
-    rooms.append(buildRoomGroupSection(ALL_GROUP_KEY, '全部', visibleRooms, snapshot, trendWindow));
+    if (roomListLayoutSignature !== signature || !rooms.querySelector('.room-group')) {
+      rooms.replaceChildren(buildRoomGroupSection(ALL_GROUP_KEY, '全部', visibleRooms, snapshot, trendWindow));
+      for (const group of getCustomGroups(snapshot)) {
+        const groupRoomIds = new Set(group.rooms || []);
+        const groupRooms = visibleRooms.filter((room) => groupRoomIds.has(room.roomId));
+        rooms.append(buildRoomGroupSection(getGroupKey(group.id), group.name, groupRooms, snapshot, trendWindow));
+      }
+    } else {
+      updateRoomRows(snapshot, visibleRooms, trendWindow);
+    }
+    roomListLayoutSignature = signature;
+  }
 
+  function getRoomListLayoutSignature(snapshot, visibleRooms) {
+    return JSON.stringify({
+      displayMode,
+      trendsExpanded,
+      visibleRoomIds: visibleRooms.map((room) => room.roomId),
+      groups: getCustomGroups(snapshot).map((group) => ({
+        id: group.id,
+        name: group.name,
+        rooms: Array.isArray(group.rooms) ? group.rooms : []
+      })),
+      collapsedGroupKeys: Array.from(collapsedGroupKeys).sort(),
+      openRoomGroupEditors: Array.from(openRoomGroupEditors).sort()
+    });
+  }
+
+  function updateRoomRows(snapshot, visibleRooms, trendWindow) {
+    const roomsById = new Map(snapshot.rooms.map((room) => [room.roomId, room]));
+    for (const row of rooms.querySelectorAll('[data-room-id]')) {
+      const room = roomsById.get(row.dataset.roomId);
+      if (!room) {
+        continue;
+      }
+      updateRoomRow(row, room, snapshot, trendWindow);
+    }
+
+    const groups = [{ key: ALL_GROUP_KEY, title: '全部', rooms: visibleRooms }];
     for (const group of getCustomGroups(snapshot)) {
       const groupRoomIds = new Set(group.rooms || []);
-      const groupRooms = visibleRooms.filter((room) => groupRoomIds.has(room.roomId));
-      rooms.append(buildRoomGroupSection(getGroupKey(group.id), group.name, groupRooms, snapshot, trendWindow));
+      groups.push({
+        key: getGroupKey(group.id),
+        title: group.name,
+        rooms: visibleRooms.filter((room) => groupRoomIds.has(room.roomId))
+      });
     }
+    const sections = new Map(
+      Array.from(rooms.querySelectorAll('.room-group')).map((section) => [section.dataset.groupKey, section])
+    );
+    for (const group of groups) {
+      const section = sections.get(group.key);
+      if (!section) continue;
+      const totalOnline = section.querySelector('.room-group-total-online');
+      const totalGuardFleet = section.querySelector('.room-group-total-guard');
+      const count = section.querySelector('.room-group-count');
+      const liveCount = group.rooms.filter((room) => room.status === 'live').length;
+      if (totalOnline) {
+        totalOnline.textContent = formatNumber(sumGroupMetric(group.rooms, (room) => room.online));
+        totalOnline.title = `${group.title} · 总在线人数`;
+      }
+      if (totalGuardFleet) {
+        totalGuardFleet.textContent = formatNumber(sumGroupMetric(group.rooms, (room) => room.guardFleet?.total));
+        totalGuardFleet.title = `${group.title} · 舰队总人数`;
+      }
+      if (count) {
+        count.textContent = `${liveCount}/${group.rooms.length}`;
+        count.title = `${group.title} · 开播 ${liveCount} / 总计 ${group.rooms.length}`;
+      }
+    }
+  }
+
+  function updateRoomRow(row, room, snapshot, trendWindow) {
+    const statusDot = row.querySelector('.live-dot');
+    if (statusDot) {
+      statusDot.className = `live-dot ${liveDotClass(room.status)}`;
+      statusDot.title = liveDotTitle(room.status);
+    }
+
+    if (row.classList.contains('room-compact')) {
+      const anchor = row.querySelector('.compact-anchor');
+      if (anchor) {
+        anchor.textContent = room.anchorName || '-';
+        anchor.title = `${room.anchorName || '-'} · ${room.roomId}`;
+      }
+      const online = row.querySelector('.compact-online');
+      if (online) {
+        online.textContent = room.online === null ? '-' : formatNumber(room.online);
+        updateCachedMetricElement(online, room.onlineStale, room.onlineLastSuccessAt, '在线人数', '在线人数');
+      }
+      const guardFleet = row.querySelector('.compact-guard');
+      if (guardFleet) {
+        guardFleet.textContent = formatGuardFleet(room.guardFleet);
+        updateCachedMetricElement(guardFleet, room.guardFleetStale, room.guardFleetLastSuccessAt, '舰队人数', '舰队人数');
+      }
+      const duration = row.querySelector('.compact-duration');
+      if (duration) bindDurationValue(duration, room);
+      updateRoomError(row, 'compact-error', room.error);
+    } else {
+      const anchor = row.querySelector('.anchor');
+      if (anchor) anchor.textContent = `${room.anchorName || '-'} · ${room.roomId}`;
+      const fans = row.querySelector('.anchor-meta span');
+      if (fans) {
+        fans.textContent = formatNullableNumber(room.fansCount);
+        updateCachedMetricElement(fans, room.fansCountStale, room.fansCountLastSuccessAt, '粉丝数');
+      }
+      const title = row.querySelector('.title');
+      if (title) title.textContent = room.title || '-';
+      const liveStatus = row.querySelector('.status');
+      if (liveStatus) {
+        liveStatus.className = `status status-${room.status}`;
+        liveStatus.textContent = statusText(room.status);
+      }
+      const onlineValue = row.querySelector('.online-metric .compact-value');
+      if (onlineValue) {
+        onlineValue.textContent = room.online === null ? '-' : formatNumber(room.online);
+        updateCachedMetricElement(onlineValue, room.onlineStale, room.onlineLastSuccessAt, '在线人数');
+      }
+      const durationValueElement = row.querySelector('.duration-metric .compact-value');
+      if (durationValueElement) bindDurationValue(durationValueElement, room);
+      const guardValue = row.querySelector('.guard-metric .compact-value');
+      if (guardValue) {
+        guardValue.textContent = formatGuardFleet(room.guardFleet);
+        updateCachedMetricElement(guardValue, room.guardFleetStale, room.guardFleetLastSuccessAt, '舰队人数');
+      }
+      updateRoomError(row, 'error', room.error);
+    }
+
+    const trend = Array.from(row.children).find((child) => child.classList.contains('trend-panel'));
+    if (trend && trendsExpanded) {
+      trend.replaceChildren(buildTrendChart(snapshot.onlineHistory?.[room.roomId] || [], trendWindow));
+    }
+  }
+
+  function updateCachedMetricElement(element, stale, lastSuccessAt, label, freshTitle) {
+    element.classList.remove('metric-stale');
+    element.removeAttribute('aria-label');
+    element.removeAttribute('title');
+    applyCachedMetricState(element, stale, lastSuccessAt, label);
+    if (!stale && freshTitle) {
+      element.title = freshTitle;
+    }
+  }
+
+  function updateRoomError(row, className, message) {
+    let error = row.querySelector(`.${className}`);
+    if (!message) {
+      error?.remove();
+      return;
+    }
+    if (!error) {
+      error = document.createElement('div');
+      error.className = className;
+      const insertBefore = Array.from(row.children).find((child) =>
+        child.classList.contains('room-group-editor') || child.classList.contains('trend-panel')
+      );
+      if (insertBefore) {
+        row.insertBefore(error, insertBefore);
+      } else {
+        row.append(error);
+      }
+    }
+    error.textContent = message;
   }
 
   function rerenderLatestSnapshot() {
@@ -686,6 +922,7 @@
   function buildRoomGroupSection(key, title, groupRooms, snapshot, trendWindow) {
     const section = document.createElement('section');
     section.className = 'room-group';
+    section.dataset.groupKey = key;
     section.classList.toggle('is-collapsed', collapsedGroupKeys.has(key));
 
     const header = document.createElement('button');
@@ -919,6 +1156,7 @@
   function roomCard(room, snapshot, trendWindow) {
     const card = document.createElement('article');
     card.className = `room ${trendsExpanded ? 'with-trend' : ''}`;
+    card.dataset.roomId = room.roomId;
 
     const statusDot = document.createElement('span');
     statusDot.className = `live-dot ${liveDotClass(room.status)}`;
@@ -1000,6 +1238,7 @@
   function compactRoomRow(room, snapshot, trendWindow) {
     const row = document.createElement('article');
     row.className = `room-compact ${trendsExpanded ? 'with-trend' : ''}`;
+    row.dataset.roomId = room.roomId;
 
     const statusDot = document.createElement('span');
     statusDot.className = `live-dot ${liveDotClass(room.status)}`;
@@ -1151,7 +1390,7 @@
     const segments = [];
     let commands = [];
 
-    for (const [timestamp, online] of points) {
+    for (const [timestamp, online] of downsampleTrendPoints(points, width, paddingLeft, paddingRight)) {
       if (typeof online !== 'number') {
         if (commands.length > 1) {
           segments.push(commands.join(' '));
@@ -1172,6 +1411,71 @@
     }
 
     return segments;
+  }
+
+  function downsampleTrendPoints(points, width, paddingLeft, paddingRight) {
+    const plotWidth = Math.max(1, width - paddingLeft - paddingRight);
+    const maxPoints = Math.max(64, Math.floor(plotWidth * 2));
+    if (points.length <= maxPoints) {
+      return points;
+    }
+
+    const sampled = [];
+    let segment = [];
+    const appendSegment = () => {
+      if (segment.length > 0) {
+        sampled.push(...downsampleNumericSegment(segment, maxPoints));
+        segment = [];
+      }
+    };
+
+    for (const point of points) {
+      if (typeof point[1] === 'number') {
+        segment.push(point);
+        continue;
+      }
+
+      appendSegment();
+      const previous = sampled[sampled.length - 1];
+      if (!previous || typeof previous[1] === 'number') {
+        sampled.push(point);
+      }
+    }
+    appendSegment();
+    return sampled;
+  }
+
+  function downsampleNumericSegment(points, maxPoints) {
+    if (points.length <= maxPoints) {
+      return points;
+    }
+
+    const result = [points[0]];
+    const interiorCount = points.length - 2;
+    const bucketCount = Math.max(1, Math.min(interiorCount, Math.floor((maxPoints - 2) / 2)));
+    const bucketSize = interiorCount / bucketCount;
+
+    for (let bucketIndex = 0; bucketIndex < bucketCount; bucketIndex += 1) {
+      const start = 1 + Math.floor(bucketIndex * bucketSize);
+      const end = Math.min(points.length - 1, Math.max(start + 1, 1 + Math.floor((bucketIndex + 1) * bucketSize)));
+      let minIndex = start;
+      let maxIndex = start;
+      for (let index = start + 1; index < end; index += 1) {
+        if (points[index][1] < points[minIndex][1]) minIndex = index;
+        if (points[index][1] > points[maxIndex][1]) maxIndex = index;
+      }
+
+      if (minIndex === maxIndex) {
+        result.push(points[minIndex]);
+      } else if (minIndex < maxIndex) {
+        result.push(points[minIndex], points[maxIndex]);
+      } else {
+        result.push(points[maxIndex], points[minIndex]);
+      }
+    }
+
+    result.push(points[points.length - 1]);
+    return result;
   }
 
   function renderOverviewTrend(snapshot) {

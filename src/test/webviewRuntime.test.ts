@@ -716,3 +716,96 @@ test('room rows open and automatically connect the selected room in the danmaku 
   assert.match(extensionSource, /provider\.connectRoom\(normalizedRoomId\)/);
   assert.match(extensionSource, /executeCommand\('bwatch\.danmaku\.focus'\)/);
 });
+
+test('monitor snapshot patches merge history and request a full snapshot on revision gaps', () => {
+  const source = readWebviewSource();
+  const context = vm.createContext({ Number, Object, Array });
+  vm.runInContext(extractFunction(source, 'applySnapshotEnvelope', 'requestHistoryDates'), context);
+  const mergeSnapshotPatch = vm.runInContext('mergeSnapshotPatch', context) as (
+    previous: Record<string, unknown>,
+    patch: Record<string, unknown>,
+    revision: number
+  ) => Record<string, unknown>;
+
+  const merged = mergeSnapshotPatch(
+    {
+      revision: 4,
+      rooms: [{ roomId: 'room-1' }],
+      settings: { autoRefreshEnabled: true },
+      loading: false,
+      lastRefreshAt: 100,
+      lastRefreshText: '刚刚',
+      onlineHistory: {
+        'room-1': [[100, 10], [200, 12]],
+        'room-2': [[100, 5]]
+      },
+      message: '旧状态'
+    },
+    {
+      loading: true,
+      message: null,
+      onlineHistory: {
+        append: { 'room-1': [[300, 15]] },
+        replace: { 'room-2': [[100, 6], [200, 8]] },
+        removeRoomIds: ['room-3']
+      }
+    },
+    5
+  );
+
+  assert.equal(merged.revision, 5);
+  assert.equal(merged.loading, true);
+  assert.equal('message' in merged, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(merged.onlineHistory)), {
+    'room-1': [[100, 10], [200, 12], [300, 15]],
+    'room-2': [[100, 6], [200, 8]]
+  });
+  assert.match(source, /latestSnapshot\.revision !== message\.baseRevision/);
+  assert.match(source, /snapshot\.revision < latestSnapshot\.revision/);
+  assert.match(source, /vscode\.postMessage\(\{ type: 'ready' \}\)/);
+  assert.match(source, /historyPatch\.append/);
+  assert.match(source, /historyPatch\.replace/);
+  assert.match(source, /historyPatch\.removeRoomIds/);
+});
+
+test('trend SVG paths downsample dense numeric segments while preserving extrema and gaps', () => {
+  const source = readWebviewSource();
+  const context = vm.createContext({ Math });
+  vm.runInContext(extractFunction(source, 'downsampleTrendPoints', 'downsampleNumericSegment'), context);
+  vm.runInContext(extractFunction(source, 'downsampleNumericSegment', 'buildTrendFieldHeading'), context);
+  const downsampleTrendPoints = vm.runInContext('downsampleTrendPoints', context) as (
+    points: Array<[number, number | null]>,
+    width: number,
+    paddingLeft: number,
+    paddingRight: number
+  ) => Array<[number, number | null]>;
+
+  const points: Array<[number, number | null]> = [[0, 10]];
+  for (let index = 1; index < 500; index += 1) {
+    points.push([index, index === 217 ? 1000 : index % 17]);
+  }
+  points.push([500, null], [501, null], [502, 12], [503, 20]);
+
+  const sampled = downsampleTrendPoints(points, 160, 20, 10);
+  assert.ok(sampled.length < points.length);
+  assert.deepEqual(sampled[0], [0, 10]);
+  assert.deepEqual(sampled[sampled.length - 1], [503, 20]);
+  assert.ok(sampled.some(([timestamp, online]) => timestamp === 217 && online === 1000));
+  assert.ok(sampled.some(([, online], index) => online === null && sampled[index - 1]?.[1] !== null));
+  assert.match(source, /downsampleTrendPoints\(points, width, paddingLeft, paddingRight\)/);
+});
+
+test('monitor room list reuses stable rows when only snapshot values change', () => {
+  const source = readWebviewSource();
+  const renderSource = extractFunction(source, 'render', 'renderRoomList');
+  const roomListSource = extractFunction(source, 'renderRoomList', 'getRoomListLayoutSignature');
+
+  assert.match(renderSource, /renderRoomList\(snapshot, visibleRooms, trendWindow\)/);
+  assert.match(roomListSource, /roomListLayoutSignature !== signature/);
+  assert.match(roomListSource, /updateRoomRows\(snapshot, visibleRooms, trendWindow\)/);
+  assert.match(source, /room-group-total-online/);
+  assert.match(source, /group\.rooms\.filter\(\(room\) => room\.status === 'live'\)/);
+  assert.match(source, /row\.dataset\.roomId = room\.roomId/);
+  assert.match(source, /trend\.replaceChildren\(buildTrendChart/);
+  assert.doesNotMatch(renderSource, /rooms\.innerHTML\s*=\s*''/);
+});

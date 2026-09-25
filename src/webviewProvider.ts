@@ -1,6 +1,15 @@
 import * as vscode from 'vscode';
 import { formatUpdatedAt } from './time';
-import { DataRefreshSettings, HistoryDateSummary, HistoryQueryResult, LiveSessionSummary, MonitorSnapshot } from './types';
+import {
+  DataRefreshSettings,
+  HistoryDateSummary,
+  HistoryQueryResult,
+  LiveSessionSummary,
+  MonitorSnapshot,
+  MonitorSnapshotEnvelope,
+  MonitorSnapshotPatch,
+  OnlineViewerHistoryPoint
+} from './types';
 
 type WebviewMessage =
   | { type: 'ready' }
@@ -39,9 +48,9 @@ export interface WebviewActions {
   setLiveStartNotificationsEnabled(enabled: boolean): void;
   setAutoRefreshInterval(intervalSeconds: number): void;
   setDataRefreshInterval(kind: keyof DataRefreshSettings, intervalSeconds: number): void;
-  getHistoryDates(): HistoryDateSummary[];
-  queryHistoryDate(dates: string[], startMinute: number, endMinute: number): HistoryQueryResult;
-  getRoomSessions(roomId: string): LiveSessionSummary[];
+  getHistoryDates(): HistoryDateSummary[] | Promise<HistoryDateSummary[]>;
+  queryHistoryDate(dates: string[], startMinute: number, endMinute: number): HistoryQueryResult | Promise<HistoryQueryResult>;
+  getRoomSessions(roomId: string): LiveSessionSummary[] | Promise<LiveSessionSummary[]>;
 }
 
 export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
@@ -50,6 +59,7 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
   private latestSnapshot: MonitorSnapshot;
   private visible = false;
   private lastSentRevision = -1;
+  private lastSentSnapshot?: MonitorSnapshot & { lastRefreshText: string };
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -67,6 +77,8 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
+    this.lastSentRevision = -1;
+    this.lastSentSnapshot = undefined;
     this.view = webviewView;
     this.visible = webviewView.visible;
     webviewView.webview.options = {
@@ -79,12 +91,15 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
         this.visible = webviewView.visible;
         if (this.visible) {
           this.lastSentRevision = -1;
+          this.lastSentSnapshot = undefined;
           this.postLatestSnapshot();
         }
       }),
       webviewView.onDidDispose(() => {
         this.visible = false;
         this.view = undefined;
+        this.lastSentRevision = -1;
+        this.lastSentSnapshot = undefined;
         this.viewDisposables.splice(0).forEach((disposable) => disposable.dispose());
       }),
       webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
@@ -107,24 +122,38 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
     if (revision === this.lastSentRevision) {
       return;
     }
+    const snapshot = serializeSnapshot(this.latestSnapshot);
+    const canPatch = this.lastSentSnapshot !== undefined && this.lastSentRevision >= 0 && this.lastSentRevision < revision;
+    const envelope: MonitorSnapshotEnvelope = canPatch
+      ? {
+          mode: 'patch',
+          revision,
+          baseRevision: this.lastSentRevision,
+          patch: createSnapshotPatch(this.lastSentSnapshot!, snapshot)
+        }
+      : { mode: 'full', revision, snapshot };
     this.lastSentRevision = revision;
-    this.postMessage({
-      type: 'snapshot',
-      snapshot: serializeSnapshot(this.latestSnapshot)
+    this.lastSentSnapshot = snapshot;
+    this.postMessage({ type: 'snapshot', ...envelope }).then((delivered) => {
+      if (!delivered) {
+        this.lastSentRevision = -1;
+        this.lastSentSnapshot = undefined;
+      }
     });
   }
 
-  private postMessage(message: unknown): void {
+  private postMessage(message: unknown): Promise<boolean> {
     if (!this.visible || !this.view) {
-      return;
+      return Promise.resolve(false);
     }
-    void this.view.webview.postMessage(message).then(undefined, () => undefined);
+    return Promise.resolve(this.view.webview.postMessage(message)).then(() => true, () => false);
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
     switch (message.type) {
       case 'ready':
         this.lastSentRevision = -1;
+        this.lastSentSnapshot = undefined;
         this.postLatestSnapshot();
         break;
       case 'refresh':
@@ -173,23 +202,23 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
         this.actions.setDataRefreshInterval(message.kind, message.intervalSeconds);
         break;
       case 'loadHistoryDates':
-        this.handleHistoryDates(message.requestId);
+        await this.handleHistoryDates(message.requestId);
         break;
       case 'loadHistoryDate':
-        this.handleHistoryDate(message.requestId, message.dates, message.startMinute, message.endMinute);
+        await this.handleHistoryDate(message.requestId, message.dates, message.startMinute, message.endMinute);
         break;
       case 'loadRoomSessions':
-        this.handleRoomSessions(message.requestId, message.roomId);
+        await this.handleRoomSessions(message.requestId, message.roomId);
         break;
     }
   }
 
-  private handleHistoryDates(requestId: number): void {
+  private async handleHistoryDates(requestId: number): Promise<void> {
     try {
       this.postMessage({
         type: 'historyDates',
         requestId,
-        dates: this.actions.getHistoryDates()
+        dates: await this.actions.getHistoryDates()
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '历史日期读取失败';
@@ -202,12 +231,12 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private handleHistoryDate(requestId: number, dates: string[], startMinute: number, endMinute: number): void {
+  private async handleHistoryDate(requestId: number, dates: string[], startMinute: number, endMinute: number): Promise<void> {
     try {
       void this.view?.webview.postMessage({
         type: 'historyDate',
         requestId,
-        history: this.actions.queryHistoryDate(dates, startMinute, endMinute)
+        history: await this.actions.queryHistoryDate(dates, startMinute, endMinute)
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '历史数据读取失败';
@@ -226,14 +255,14 @@ export class LiveMonitorWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private handleRoomSessions(requestId: number, roomId: string): void {
+  private async handleRoomSessions(requestId: number, roomId: string): Promise<void> {
     try {
       void this.view?.webview.postMessage({
         type: 'roomSessions',
         requestId,
         roomId,
         anchorName: this.latestSnapshot.rooms.find((room) => room.roomId === roomId)?.anchorName || '',
-        sessions: this.actions.getRoomSessions(roomId)
+        sessions: await this.actions.getRoomSessions(roomId)
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '主播历史读取失败';
@@ -403,6 +432,55 @@ function serializeSnapshot(snapshot: MonitorSnapshot): MonitorSnapshot & { lastR
   };
 }
 
+function createSnapshotPatch(
+  previous: MonitorSnapshot & { lastRefreshText: string },
+  next: MonitorSnapshot & { lastRefreshText: string }
+): MonitorSnapshotPatch {
+  const patch: MonitorSnapshotPatch = {};
+  if (!sameJson(previous.rooms, next.rooms)) patch.rooms = next.rooms;
+  if (!sameJson(previous.settings, next.settings)) patch.settings = next.settings;
+  if (previous.loading !== next.loading) patch.loading = next.loading;
+  if (previous.lastRefreshAt !== next.lastRefreshAt) {
+    patch.lastRefreshAt = next.lastRefreshAt;
+    patch.lastRefreshText = next.lastRefreshText;
+  }
+  if (previous.message !== next.message) patch.message = next.message ?? null;
+
+  const append: Record<string, OnlineViewerHistoryPoint[]> = {};
+  const replace: Record<string, OnlineViewerHistoryPoint[]> = {};
+  const previousHistory = previous.onlineHistory || {};
+  const nextHistory = next.onlineHistory || {};
+  for (const [roomId, nextPoints] of Object.entries(nextHistory)) {
+    const previousPoints = previousHistory[roomId] || [];
+    if (samePoints(previousPoints, nextPoints)) continue;
+    if (isPrefix(previousPoints, nextPoints)) {
+      append[roomId] = nextPoints.slice(previousPoints.length);
+    } else {
+      replace[roomId] = nextPoints;
+    }
+  }
+  const removeRoomIds = Object.keys(previousHistory).filter((roomId) => !(roomId in nextHistory));
+  if (Object.keys(append).length || Object.keys(replace).length || removeRoomIds.length) {
+    patch.onlineHistory = {
+      ...(Object.keys(append).length ? { append } : {}),
+      ...(Object.keys(replace).length ? { replace } : {}),
+      ...(removeRoomIds.length ? { removeRoomIds } : {})
+    };
+  }
+  return patch;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function samePoints(left: readonly OnlineViewerHistoryPoint[], right: readonly OnlineViewerHistoryPoint[]): boolean {
+  return left.length === right.length && left.every((point, index) => point[0] === right[index][0] && point[1] === right[index][1]);
+}
+
+function isPrefix(prefix: readonly OnlineViewerHistoryPoint[], points: readonly OnlineViewerHistoryPoint[]): boolean {
+  return prefix.length <= points.length && prefix.every((point, index) => point[0] === points[index][0] && point[1] === points[index][1]);
+}
 function getNonce(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let text = '';

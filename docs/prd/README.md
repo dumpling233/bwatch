@@ -48,6 +48,8 @@ AI 在进行非平凡代码变更前必须先使用 `$prd-keeper`，阅读本文
 
 ## 最近 PRD 日志
 
+- [20260924-dumpling](prd_log/20260924-dumpling.md)
+
 - [20260923-dumpling](prd_log/20260923-dumpling.md)
 
 - [20260909-dumpling](prd_log/20260909-dumpling.md)

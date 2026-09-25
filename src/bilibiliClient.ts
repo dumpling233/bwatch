@@ -12,6 +12,20 @@ const BILIBILI_BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const BILIBILI_SEARCH_BLOCKED_MESSAGE = 'B站主播搜索暂时被拦截，请稍后再试，或直接输入直播间房间号';
 const ROOM_ENRICHMENT_CONCURRENCY = 6;
+const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
+
+export interface BilibiliRequestMetric {
+  kind: 'baseInfo' | 'online' | 'guard' | 'fans' | 'search';
+  durationMs: number;
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
+export interface BilibiliLiveClientOptions {
+  requestTimeoutMs?: number;
+  onRequest?: (metric: BilibiliRequestMetric) => void;
+}
 interface CachedNumber {
   value: number;
   fetchedAt: number;
@@ -98,13 +112,17 @@ export class BilibiliLiveClient {
   private readonly guardInFlight = new Map<string, Promise<CachedFieldResult<GuardFleet | null>>>();
   private readonly fansInFlight = new Map<string, Promise<CachedFieldResult<number | null>>>();
   private readonly roomUids = new Map<string, number>();
+  private readonly lastStatuses = new Map<string, LiveRoomStatus>();
   private baseInfoCache?: {
     roomIdsKey: string;
     payload: BilibiliBaseInfoResponse;
     fetchedAt: number;
   };
 
-  constructor(private readonly fetchImpl: FetchLike = fetch) {}
+  constructor(
+    private readonly fetchImpl: FetchLike = fetch,
+    private readonly options: BilibiliLiveClientOptions = {}
+  ) {}
 
   async fetchRooms(
     roomIds: readonly string[],
@@ -114,6 +132,7 @@ export class BilibiliLiveClient {
     const uniqueRoomIds = [...new Set(roomIds)];
     if (uniqueRoomIds.length === 0) {
       this.pruneRoomCaches([]);
+      this.lastStatuses.clear();
       return [];
     }
 
@@ -122,39 +141,59 @@ export class BilibiliLiveClient {
       this.pruneRoomCaches(uniqueRoomIds, payload);
       const statuses = uniqueRoomIds.map((roomId) => normalizeRoomInfo(roomId, payload.data?.by_room_ids?.[roomId], nowMs));
 
-      return mapWithConcurrency(
+      const enrichedStatuses = await mapWithConcurrency(
         statuses,
         ROOM_ENRICHMENT_CONCURRENCY,
         async (status) => {
-          const info = payload.data?.by_room_ids?.[status.roomId];
-          if (!info?.uid) {
-            return status;
+          try {
+            const info = payload.data?.by_room_ids?.[status.roomId];
+            if (!info?.uid) {
+              return status;
+            }
+
+            const [online, guardFleet, fansCount] = await Promise.all([
+              status.status === 'live'
+                ? this.getOnlineViewerCount(status.roomId, info.uid, nowMs, refreshSettings.onlineIntervalSeconds)
+                : Promise.resolve({ value: status.online, stale: false } as CachedFieldResult<number | null>),
+              this.getGuardFleet(status.roomId, info.uid, nowMs, refreshSettings.guardIntervalSeconds),
+              this.getFansCount(info.uid, nowMs, refreshSettings.fansIntervalSeconds)
+            ]);
+
+            return {
+              ...status,
+              online: status.status === 'live' ? online.value : status.online,
+              onlineStale: online.stale,
+              onlineLastSuccessAt: online.lastSuccessAt,
+              guardFleet: guardFleet.value ?? status.guardFleet,
+              guardFleetStale: guardFleet.stale,
+              guardFleetLastSuccessAt: guardFleet.lastSuccessAt,
+              fansCount: fansCount.value ?? status.fansCount,
+              fansCountStale: fansCount.stale,
+              fansCountLastSuccessAt: fansCount.lastSuccessAt
+            };
+          } catch (error) {
+            return {
+              ...status,
+              error: `房间补充数据请求失败：${formatNetworkError(error)}`
+            };
           }
-
-          const [online, guardFleet, fansCount] = await Promise.all([
-            status.status === 'live'
-              ? this.getOnlineViewerCount(status.roomId, info.uid, nowMs, refreshSettings.onlineIntervalSeconds)
-              : Promise.resolve({ value: status.online, stale: false } as CachedFieldResult<number | null>),
-            this.getGuardFleet(status.roomId, info.uid, nowMs, refreshSettings.guardIntervalSeconds),
-            this.getFansCount(info.uid, nowMs, refreshSettings.fansIntervalSeconds)
-          ]);
-
-          return {
-            ...status,
-            online: status.status === 'live' ? online.value : status.online,
-            onlineStale: online.stale,
-            onlineLastSuccessAt: online.lastSuccessAt,
-            guardFleet: guardFleet.value ?? status.guardFleet,
-            guardFleetStale: guardFleet.stale,
-            guardFleetLastSuccessAt: guardFleet.lastSuccessAt,
-            fansCount: fansCount.value ?? status.fansCount,
-            fansCountStale: fansCount.stale,
-            fansCountLastSuccessAt: fansCount.lastSuccessAt
-          };
         }
       );
+      for (const status of enrichedStatuses) {
+        this.lastStatuses.set(status.roomId, status);
+      }
+      return enrichedStatuses;
     } catch (error) {
       const message = formatNetworkError(error);
+      const fallback = this.baseInfoCache?.payload;
+      if (fallback) {
+        this.pruneRoomCaches(uniqueRoomIds, fallback);
+        return uniqueRoomIds.map((roomId) => ({
+          ...(this.lastStatuses.get(roomId) ?? normalizeRoomInfo(roomId, fallback.data?.by_room_ids?.[roomId], nowMs)),
+          lastUpdatedAt: nowMs,
+          error: `基础信息请求失败，沿用上次成功数据：${message}`
+        }));
+      }
       return uniqueRoomIds.map((roomId) => createErrorStatus(roomId, message, nowMs));
     }
   }
@@ -166,6 +205,7 @@ export class BilibiliLiveClient {
         const previousUid = this.roomUids.get(roomId);
         this.removeRoomCache(roomId);
         this.roomUids.delete(roomId);
+        this.lastStatuses.delete(roomId);
         if (previousUid !== undefined && !this.isUidActive(previousUid)) {
           this.removeFanCache(previousUid);
         }
@@ -179,6 +219,7 @@ export class BilibiliLiveClient {
       const previousUid = this.roomUids.get(roomId);
       if (previousUid !== undefined && previousUid !== uid) {
         this.removeRoomCache(roomId);
+        this.lastStatuses.delete(roomId);
       }
       this.roomUids.set(roomId, uid);
       if (previousUid !== undefined && previousUid !== uid && !this.isUidActive(previousUid)) {
@@ -256,13 +297,13 @@ export class BilibiliLiveClient {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(url, {
+      response = await this.request(url, {
         headers: createBilibiliRequestHeaders({
           origin: 'https://search.bilibili.com',
           referer: `https://search.bilibili.com/live?keyword=${encodeURIComponent(trimmedKeyword)}`,
           includeVisitorCookie: true
         })
-      });
+      }, 'search');
     } catch (error) {
       throw new Error(formatNetworkError(error));
     }
@@ -303,12 +344,12 @@ export class BilibiliLiveClient {
       url.searchParams.append('room_ids', roomId);
     }
 
-    const response = await this.fetchImpl(url, {
+    const response = await this.request(url, {
       headers: createBilibiliRequestHeaders({
         origin: 'https://live.bilibili.com',
         referer: 'https://live.bilibili.com/'
       })
-    });
+    }, 'baseInfo');
 
     if (!response.ok) {
       throw new Error(`B站接口返回 HTTP ${response.status}`);
@@ -365,12 +406,12 @@ export class BilibiliLiveClient {
       url.searchParams.set('page', '1');
       url.searchParams.set('pageSize', '1');
 
-      const response = await this.fetchImpl(url, {
+      const response = await this.request(url, {
         headers: createBilibiliRequestHeaders({
           origin: 'https://live.bilibili.com',
           referer: `https://live.bilibili.com/${roomId}`
         })
-      });
+      }, 'online');
 
       if (!response.ok) {
         return null;
@@ -464,12 +505,12 @@ export class BilibiliLiveClient {
       url.searchParams.set('page', '1');
       url.searchParams.set('page_size', '1');
 
-      const response = await this.fetchImpl(url, {
+      const response = await this.request(url, {
         headers: createBilibiliRequestHeaders({
           origin: 'https://live.bilibili.com',
           referer: `https://live.bilibili.com/${roomId}`
         })
-      });
+      }, 'guard');
 
       if (!response.ok) {
         return null;
@@ -493,12 +534,12 @@ export class BilibiliLiveClient {
       const url = new URL(RELATION_STAT_URL);
       url.searchParams.set('vmid', String(uid));
 
-      const response = await this.fetchImpl(url, {
+      const response = await this.request(url, {
         headers: createBilibiliRequestHeaders({
           origin: 'https://space.bilibili.com',
           referer: `https://space.bilibili.com/${uid}`
         })
-      });
+      }, 'fans');
 
       if (!response.ok) {
         return null;
@@ -512,6 +553,59 @@ export class BilibiliLiveClient {
       return payload.data.follower;
     } catch {
       return null;
+    }
+  }
+
+  private async request(input: string | URL, init: RequestInit, kind: BilibiliRequestMetric['kind']): Promise<Response> {
+    const timeoutMs = Math.max(100, this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const sourceSignal = init.signal;
+    const abort = () => controller.abort();
+    const startedAt = Date.now();
+
+    if (sourceSignal?.aborted) {
+      controller.abort();
+    } else {
+      sourceSignal?.addEventListener('abort', abort, { once: true });
+    }
+
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          const error = new Error('request timeout');
+          error.name = 'AbortError';
+          reject(error);
+        }, timeoutMs);
+      });
+      const response = await Promise.race([
+        this.fetchImpl(input, { ...init, signal: controller.signal }),
+        timeoutPromise
+      ]);
+      this.emitRequestMetric({ kind, durationMs: Math.max(0, Date.now() - startedAt), ok: response.ok, status: response.status });
+      return response;
+    } catch (error) {
+      this.emitRequestMetric({
+        kind,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        ok: false,
+        error: formatNetworkError(error)
+      });
+      throw error;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      sourceSignal?.removeEventListener('abort', abort);
+    }
+  }
+
+  private emitRequestMetric(metric: BilibiliRequestMetric): void {
+    try {
+      this.options.onRequest?.(metric);
+    } catch {
+      // 观测失败不能影响采集链路。
     }
   }
 }

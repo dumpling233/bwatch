@@ -62,6 +62,81 @@ test('BilibiliLiveClient preserves requested rooms when one is missing', async (
   assert.equal(rooms[1].roomId, '2');
 });
 
+test('BilibiliLiveClient times out one enrichment request without blocking other rooms', async () => {
+  const byRoomIds = Object.fromEntries(Array.from({ length: 4 }, (_, index) => [String(index + 1), {
+    uid: 100 + index,
+    room_id: index + 1,
+    title: `房间${index + 1}`,
+    uname: `主播${index + 1}`,
+    live_status: 0,
+    online: 0,
+    live_time: 0
+  }]));
+  const startedAt = Date.now();
+  const client = new BilibiliLiveClient(async (input) => {
+    const url = String(input);
+    if (url.includes('getRoomBaseInfo')) {
+      return baseInfoResponse(byRoomIds);
+    }
+    if (url.includes('guardTab') && url.includes('roomid=1')) {
+      return new Promise<Response>(() => undefined);
+    }
+    if (url.includes('guardTab')) {
+      return guardResponse(3);
+    }
+    return relationStatResponse(7);
+  }, { requestTimeoutMs: 100 });
+
+  const rooms = await client.fetchRooms(Object.keys(byRoomIds), 1_000);
+
+  assert.equal(rooms.length, 4);
+  assert.equal(rooms[0].status, 'offline');
+  assert.equal(rooms[0].guardFleet, null);
+  assert.equal(rooms[1].guardFleet?.total, 3);
+  assert.ok(Date.now() - startedAt < 1_000);
+});
+
+test('BilibiliLiveClient keeps the last base snapshot visible when a refresh fails', async () => {
+  let baseInfoAvailable = true;
+  const metrics: string[] = [];
+  const client = new BilibiliLiveClient(async (input) => {
+    const url = String(input);
+    if (url.includes('getRoomBaseInfo')) {
+      if (!baseInfoAvailable) {
+        throw new Error('upstream unavailable');
+      }
+      return baseInfoResponse({
+        '1': {
+          uid: 100,
+          room_id: 1,
+          title: 'A',
+          uname: '主播A',
+          live_status: 1,
+          online: 300,
+          live_time: 100
+        }
+      });
+    }
+    if (url.includes('guardTab')) {
+      return guardResponse(4);
+    }
+    if (url.includes('getOnlineGoldRank')) {
+      return jsonResponse({ code: 0, data: { onlineNum: 99 } });
+    }
+    return relationStatResponse(8);
+  }, { requestTimeoutMs: 100, onRequest: (metric) => metrics.push(metric.kind) });
+
+  const first = await client.fetchRooms(['1'], 1_000);
+  baseInfoAvailable = false;
+  const second = await client.fetchRooms(['1'], 20_000);
+
+  assert.equal(first[0].status, 'live');
+  assert.equal(second[0].status, 'live');
+  assert.equal(second[0].online, 99);
+  assert.match(second[0].error ?? '', /基础信息请求失败/);
+  assert.ok(metrics.includes('baseInfo'));
+});
+
 test('BilibiliLiveClient uses online rank count for live rooms when available', async () => {
   const client = new BilibiliLiveClient(async (input) => {
     const url = String(input);

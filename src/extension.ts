@@ -92,10 +92,10 @@ export function activate(context: vscode.ExtensionContext): void {
       setLiveStartNotificationsEnabled,
       setAutoRefreshInterval,
       setDataRefreshInterval,
-      getHistoryDates: () => historyStore.getAvailableDates(),
+      getHistoryDates: () => historyStore.getAvailableDatesAsync(),
       queryHistoryDate: (dates, startMinute, endMinute) =>
-        historyStore.queryDateRangeHistory(dates, startMinute, endMinute, getKnownRoomNames()),
-      getRoomSessions: (roomId) => historyStore.getRoomSessions(roomId)
+        historyStore.queryDateRangeHistoryAsync(dates, startMinute, endMinute, getKnownRoomNames()),
+      getRoomSessions: (roomId) => historyStore.getRoomSessionsAsync(roomId)
     },
     monitor.getSnapshot()
   );

@@ -22,6 +22,8 @@ const ONLINE_HISTORY_MIGRATION_KEY = 'bwatch.onlineHistory.migrated.v2';
 const ONLINE_HISTORY_FLUSH_INTERVAL_MS = 1_000;
 const ONLINE_HISTORY_MAX_PENDING_AGE_MS = 5_000;
 const ONLINE_HISTORY_COMPACTION_RECORDS = 2_000;
+const ONLINE_HISTORY_MAX_IN_MEMORY_POINTS = 12_000;
+const ONLINE_HISTORY_QUERY_CONCURRENCY = 4;
 
 interface StoredRoomHistoryFile {
   version: number;
@@ -107,7 +109,7 @@ export class OnlineHistoryStore {
     }
 
     return clonePoints(
-      (this.history[roomId] ?? []).filter(([timestampMs]) => timestampMs >= startMs && timestampMs <= endMs)
+      this.getCompleteRoomHistory(roomId).filter(([timestampMs]) => timestampMs >= startMs && timestampMs <= endMs)
     );
   }
 
@@ -115,57 +117,14 @@ export class OnlineHistoryStore {
     if (!isRoomId(roomId)) {
       return [];
     }
-
-    const sessions: LiveSessionSummary[] = [];
-    let current: {
-      startMs: number;
-      endMs: number;
-      peakOnline: number;
-      sampleCount: number;
-      validSampleCount: number;
-    } | undefined;
-
-    for (const [timestampMs, online] of this.history[roomId] ?? []) {
-      if (typeof online === 'number' && online > 0) {
-        if (!current) {
-          current = {
-            startMs: timestampMs,
-            endMs: timestampMs,
-            peakOnline: online,
-            sampleCount: 1,
-            validSampleCount: 1
-          };
-        } else {
-          current.endMs = timestampMs;
-          current.peakOnline = Math.max(current.peakOnline, online);
-          current.sampleCount += 1;
-          current.validSampleCount += 1;
-        }
-        continue;
-      }
-
-      if (online === null && current) {
-        current.sampleCount += 1;
-        continue;
-      }
-
-      if (online === 0 && current) {
-        sessions.push(createLiveSessionSummary(roomId, current));
-        current = undefined;
-      }
-    }
-
-    if (current) {
-      sessions.push(createLiveSessionSummary(roomId, current));
-    }
-
-    return sessions.sort((left, right) => right.endMs - left.endMs);
+    return summarizeLiveSessions(roomId, this.getCompleteRoomHistory(roomId));
   }
 
   getAvailableDates(): HistoryDateSummary[] {
     const dates = new Map<string, { roomIds: Set<string>; pointCount: number }>();
 
-    for (const [roomId, points] of Object.entries(this.history)) {
+    for (const roomId of this.getKnownRoomIds()) {
+      const points = this.getCompleteRoomHistory(roomId);
       for (const [timestampMs] of points) {
         const date = formatLocalDate(timestampMs);
         const summary = dates.get(date) ?? { roomIds: new Set<string>(), pointCount: 0 };
@@ -216,7 +175,84 @@ export class OnlineHistoryStore {
     const startOfDayMs = getLocalDateStartMs(normalizedDates[0]);
     const startMs = startOfDayMs + Math.min(normalizedStartMinute, normalizedEndMinute) * 60 * 1000;
     const endMs = startOfDayMs + Math.max(normalizedStartMinute, normalizedEndMinute) * 60 * 1000 + 60 * 1000 - 1;
-    const rooms = Object.entries(this.history)
+    const rooms = this.getKnownRoomIds()
+      .map((roomId) => ({
+        roomId,
+        anchorName: this.resolveAnchorName(roomId, roomNames[roomId]),
+        points: clonePoints(this.getCompleteRoomHistory(roomId).filter(([timestampMs]) => timestampMs >= startMs && timestampMs <= endMs))
+      }))
+      .filter((room) => room.points.length > 0)
+      .sort((left, right) => compareRoomIds(left.roomId, right.roomId));
+
+    return {
+      date: normalizedDates[0],
+      dates: normalizedDates,
+      startMs,
+      endMs,
+      boundaryMs: normalizedDates.length === 2 ? getLocalDateStartMs(normalizedDates[1]) : undefined,
+      rooms
+    };
+  }
+
+  /**
+   * Reads long-term history without synchronously blocking the extension host on disk IO.
+   * The synchronous API remains available for exports and legacy callers.
+   */
+  async getAvailableDatesAsync(): Promise<HistoryDateSummary[]> {
+    await this.ready;
+    if (!this.historyDirPath) {
+      return this.getAvailableDates();
+    }
+
+    const dates = new Map<string, { roomIds: Set<string>; pointCount: number }>();
+    const roomIds = await this.getKnownRoomIdsAsync();
+    const histories = await this.readRoomHistoriesAsync(roomIds);
+    for (const [roomId, points] of histories) {
+      for (const [timestampMs] of points) {
+        const date = formatLocalDate(timestampMs);
+        const summary = dates.get(date) ?? { roomIds: new Set<string>(), pointCount: 0 };
+        summary.roomIds.add(roomId);
+        summary.pointCount += 1;
+        dates.set(date, summary);
+      }
+    }
+
+    return Array.from(dates.entries())
+      .map(([date, summary]) => ({
+        date,
+        roomIds: Array.from(summary.roomIds).sort(compareRoomIds),
+        pointCount: summary.pointCount
+      }))
+      .sort((left, right) => left.date.localeCompare(right.date));
+  }
+
+  async queryDateRangeHistoryAsync(
+    dates: readonly string[],
+    startMinute = 0,
+    endMinute = 23 * 60 + 59,
+    roomNames: Readonly<Record<string, string>> = {}
+  ): Promise<HistoryQueryResult> {
+    await this.ready;
+    const normalizedDates = normalizeDateRange(dates);
+    if (normalizedDates.length === 0) {
+      return {
+        date: dates[0] || '',
+        dates: [],
+        startMs: 0,
+        endMs: 0,
+        rooms: []
+      };
+    }
+
+    const maxMinute = normalizedDates.length === 2 ? 2 * 24 * 60 - 1 : 23 * 60 + 59;
+    const normalizedStartMinute = clampRangeMinute(startMinute, maxMinute);
+    const normalizedEndMinute = clampRangeMinute(endMinute, maxMinute);
+    const startOfDayMs = getLocalDateStartMs(normalizedDates[0]);
+    const startMs = startOfDayMs + Math.min(normalizedStartMinute, normalizedEndMinute) * 60 * 1000;
+    const endMs = startOfDayMs + Math.max(normalizedStartMinute, normalizedEndMinute) * 60 * 1000 + 60 * 1000 - 1;
+    const roomIds = await this.getKnownRoomIdsAsync();
+    const histories = await this.readRoomHistoriesAsync(roomIds);
+    const rooms = histories
       .map(([roomId, points]) => ({
         roomId,
         anchorName: this.resolveAnchorName(roomId, roomNames[roomId]),
@@ -235,6 +271,14 @@ export class OnlineHistoryStore {
     };
   }
 
+  async getRoomSessionsAsync(roomId: string): Promise<LiveSessionSummary[]> {
+    await this.ready;
+    if (!isRoomId(roomId)) {
+      return [];
+    }
+    return summarizeLiveSessions(roomId, await this.getCompleteRoomHistoryAsync(roomId));
+  }
+
   async record(rooms: readonly LiveRoomStatus[], timestampMs = Date.now()): Promise<OnlineViewerHistory> {
     await this.ready;
     const activeRoomIds: string[] = [];
@@ -246,6 +290,7 @@ export class OnlineHistoryStore {
       activeRoomIds.push(room.roomId);
       const point: OnlineViewerHistoryPoint = [timestampMs, room.online];
       this.history[room.roomId] = mergePoints(this.history[room.roomId] ?? [], [point]);
+      this.trimRoomHistoryInMemory(room.roomId, timestampMs);
       const anchorName = sanitizeAnchorName(room.roomId, room.anchorName);
       if (anchorName && this.anchorNames[room.roomId] !== anchorName) {
         this.anchorNames[room.roomId] = anchorName;
@@ -314,8 +359,14 @@ export class OnlineHistoryStore {
             }
             continue;
           }
-          const records = fs.readFileSync(filePath, 'utf8').split(String.fromCharCode(10));
+          const walText = fs.readFileSync(filePath, 'utf8');
+          const records = walText.split(String.fromCharCode(10));
           const parsed = records.map((line) => parseWalRecord(line)).filter((record): record is WalRecord => record !== undefined);
+          const lastContentIndex = findLastNonEmptyLineIndex(records);
+          if (lastContentIndex >= 0 && !parseWalRecord(records[lastContentIndex])) {
+            const repairedText = records.slice(0, lastContentIndex).join(String.fromCharCode(10));
+            fs.truncateSync(filePath, Buffer.byteLength(repairedText + (repairedText ? String.fromCharCode(10) : ''), 'utf8'));
+          }
           parsed.sort((left, right) => left.sequence - right.sequence);
           const seen = new Set<number>();
           for (const record of parsed) {
@@ -332,6 +383,9 @@ export class OnlineHistoryStore {
           // Ignore one broken room file without preventing other rooms from loading.
         }
       }
+      for (const roomId of Object.keys(this.history)) {
+        this.trimRoomHistoryInMemory(roomId, Date.now());
+      }
     } catch {
       // Monitoring continues with memory-only history when the storage directory is unavailable.
       this.persistenceState = 'degraded';
@@ -344,11 +398,24 @@ export class OnlineHistoryStore {
     }
 
     const legacyHistory = sanitizeHistory(this.storage.get<unknown>(ONLINE_HISTORY_STORAGE_KEY, {}));
+    let localMigrationSucceeded = true;
     for (const [roomId, points] of Object.entries(legacyHistory)) {
       this.history[roomId] = mergePoints(this.history[roomId] ?? [], points);
       this.roomSequences.set(roomId, points.length);
       if (this.historyDirPath) {
-        this.persistRoomCheckpointSync(roomId);
+        try {
+          this.persistRoomCheckpointSync(roomId);
+        } catch (error) {
+          localMigrationSucceeded = false;
+          this.persistenceState = 'degraded';
+          this.lastPersistenceError = error instanceof Error ? error.message : String(error);
+        }
+      }
+    }
+
+    if (localMigrationSucceeded && this.historyDirPath) {
+      for (const roomId of Object.keys(legacyHistory)) {
+        this.trimRoomHistoryInMemory(roomId, Date.now());
       }
     }
 
@@ -356,7 +423,9 @@ export class OnlineHistoryStore {
     if (!this.historyDirPath && Object.keys(legacyHistory).length > 0) {
       migrationWrites.push(Promise.resolve(this.storage.update(ONLINE_HISTORY_STORAGE_KEY, cloneHistory(this.history))));
     }
-    migrationWrites.push(Promise.resolve(this.storage.update(ONLINE_HISTORY_MIGRATION_KEY, true)));
+    if (localMigrationSucceeded) {
+      migrationWrites.push(Promise.resolve(this.storage.update(ONLINE_HISTORY_MIGRATION_KEY, true)));
+    }
     return Promise.all(migrationWrites).then(
       () => undefined,
       (error) => {
@@ -364,6 +433,161 @@ export class OnlineHistoryStore {
         this.lastPersistenceError = error instanceof Error ? error.message : String(error);
       }
     );
+  }
+
+  private getKnownRoomIds(): string[] {
+    const roomIds = new Set(Object.keys(this.history));
+    if (this.historyDirPath) {
+      try {
+        for (const fileName of fs.readdirSync(this.historyDirPath)) {
+          const extension = path.extname(fileName);
+          if (extension !== '.json' && extension !== '.wal') {
+            continue;
+          }
+          const roomId = path.basename(fileName, extension);
+          if (isRoomId(roomId)) {
+            roomIds.add(roomId);
+          }
+        }
+      } catch {
+        // Fall back to the in-memory room set when the directory is unavailable.
+      }
+    }
+    return normalizeRoomIds(Array.from(roomIds));
+  }
+
+  private async getKnownRoomIdsAsync(): Promise<string[]> {
+    const roomIds = new Set(Object.keys(this.history));
+    if (!this.historyDirPath) {
+      return normalizeRoomIds(Array.from(roomIds));
+    }
+
+    try {
+      for (const fileName of await fsPromises.readdir(this.historyDirPath)) {
+        const extension = path.extname(fileName);
+        if (extension !== '.json' && extension !== '.wal') {
+          continue;
+        }
+        const roomId = path.basename(fileName, extension);
+        if (isRoomId(roomId)) {
+          roomIds.add(roomId);
+        }
+      }
+    } catch {
+      // Fall back to the in-memory room set when the directory is unavailable.
+    }
+    return normalizeRoomIds(Array.from(roomIds));
+  }
+
+  private getCompleteRoomHistory(roomId: string): OnlineViewerHistoryPoint[] {
+    if (!this.historyDirPath || !isRoomId(roomId)) {
+      return clonePoints(this.history[roomId] ?? []);
+    }
+
+    const points: OnlineViewerHistoryPoint[] = [];
+    const jsonPath = path.join(this.historyDirPath, roomId + '.json');
+    try {
+      const stored = sanitizeStoredRoomHistory(roomId, JSON.parse(fs.readFileSync(jsonPath, 'utf8')));
+      points.push(...stored.points);
+    } catch {
+      // The WAL or the in-memory projection may still contain usable samples.
+    }
+
+    const walPath = path.join(this.historyDirPath, roomId + '.wal');
+    try {
+      const records = fs.readFileSync(walPath, 'utf8')
+        .split(String.fromCharCode(10))
+        .map((line) => parseWalRecord(line))
+        .filter((record): record is WalRecord => record !== undefined)
+        .sort((left, right) => left.sequence - right.sequence);
+      const seenSequences = new Set<number>();
+      for (const record of records) {
+        if (seenSequences.has(record.sequence)) {
+          continue;
+        }
+        seenSequences.add(record.sequence);
+        points.push([record.timestampMs, record.online]);
+      }
+    } catch {
+      // Keep the valid JSON baseline and recent in-memory points.
+    }
+
+    return mergePoints(points, this.history[roomId] ?? []);
+  }
+
+  private async getCompleteRoomHistoryAsync(roomId: string): Promise<OnlineViewerHistoryPoint[]> {
+    if (!this.historyDirPath || !isRoomId(roomId)) {
+      return clonePoints(this.history[roomId] ?? []);
+    }
+
+    const points: OnlineViewerHistoryPoint[] = [];
+    const jsonPath = path.join(this.historyDirPath, roomId + '.json');
+    const walPath = path.join(this.historyDirPath, roomId + '.wal');
+    const [jsonText, walText] = await Promise.all([
+      fsPromises.readFile(jsonPath, 'utf8').catch(() => undefined),
+      fsPromises.readFile(walPath, 'utf8').catch(() => undefined)
+    ]);
+
+    if (jsonText !== undefined) {
+      try {
+        const stored = sanitizeStoredRoomHistory(roomId, JSON.parse(jsonText));
+        points.push(...stored.points);
+      } catch {
+        // The WAL or the in-memory projection may still contain usable samples.
+      }
+    }
+
+    if (walText !== undefined) {
+      const records = walText
+        .split(String.fromCharCode(10))
+        .map((line) => parseWalRecord(line))
+        .filter((record): record is WalRecord => record !== undefined)
+        .sort((left, right) => left.sequence - right.sequence);
+      const seenSequences = new Set<number>();
+      for (const record of records) {
+        if (seenSequences.has(record.sequence)) {
+          continue;
+        }
+        seenSequences.add(record.sequence);
+        points.push([record.timestampMs, record.online]);
+      }
+    }
+
+    return mergePoints(points, this.history[roomId] ?? []);
+  }
+
+  private async readRoomHistoriesAsync(
+    roomIds: readonly string[]
+  ): Promise<ReadonlyArray<readonly [string, OnlineViewerHistoryPoint[]]>> {
+    const histories: Array<readonly [string, OnlineViewerHistoryPoint[]]> = [];
+    let nextIndex = 0;
+    const workerCount = Math.min(ONLINE_HISTORY_QUERY_CONCURRENCY, roomIds.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= roomIds.length) {
+          return;
+        }
+        histories[index] = [roomIds[index], await this.getCompleteRoomHistoryAsync(roomIds[index])];
+      }
+    }));
+    return histories;
+  }
+
+  private trimRoomHistoryInMemory(roomId: string, referenceMs: number): void {
+    if (!this.historyDirPath) {
+      return;
+    }
+    const points = this.history[roomId];
+    if (!points || points.length <= ONLINE_HISTORY_MAX_IN_MEMORY_POINTS) {
+      return;
+    }
+    const cutoffMs = referenceMs - ONLINE_HISTORY_RECENT_WINDOW_MS;
+    const recentPoints = points.filter(([timestampMs]) => timestampMs >= cutoffMs);
+    this.history[roomId] = (recentPoints.length > ONLINE_HISTORY_MAX_IN_MEMORY_POINTS
+      ? recentPoints.slice(-ONLINE_HISTORY_MAX_IN_MEMORY_POINTS)
+      : recentPoints);
   }
 
   private getRoomQueue(roomId: string): RoomPersistenceQueue {
@@ -401,7 +625,11 @@ export class OnlineHistoryStore {
   }
 
   private async flushRooms(roomIds: ReadonlySet<string>): Promise<void> {
-    await Promise.all(Array.from(roomIds, (roomId) => this.flushRoom(roomId)));
+    const results = await Promise.allSettled(Array.from(roomIds, (roomId) => this.flushRoom(roomId)));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) {
+      throw failure.reason;
+    }
   }
 
   private async flushRoom(roomId: string): Promise<void> {
@@ -441,6 +669,10 @@ export class OnlineHistoryStore {
       await task;
     } finally {
       queue.processing = undefined;
+      if (this.persistenceState !== 'healthy' && this.getPersistenceStatus().pendingRooms === 0) {
+        this.persistenceState = 'healthy';
+        this.lastPersistenceError = undefined;
+      }
     }
   }
 
@@ -472,7 +704,7 @@ export class OnlineHistoryStore {
     const tempFilePath = filePath + '.tmp';
     const handle = await fsPromises.open(tempFilePath, 'w');
     try {
-      await handle.writeFile(JSON.stringify(serializeStoredRoomHistory(roomId, this.history[roomId] ?? [], this.anchorNames[roomId])), 'utf8');
+      await handle.writeFile(JSON.stringify(serializeStoredRoomHistory(roomId, this.getCompleteRoomHistory(roomId), this.anchorNames[roomId])), 'utf8');
       await handle.sync();
     } finally {
       await handle.close();
@@ -510,8 +742,13 @@ export class OnlineHistoryStore {
 
   async flush(): Promise<void> {
     await this.ready;
-    const roomIds = new Set(this.roomQueues.keys());
-    await this.flushRooms(roomIds);
+    while (true) {
+      const roomIds = new Set(this.roomQueues.keys());
+      await this.flushRooms(roomIds);
+      if (this.getPersistenceStatus().pendingRooms === 0) {
+        break;
+      }
+    }
     if (this.getPersistenceStatus().pendingRooms > 0) {
       throw new Error('history queue is not empty');
     }
@@ -618,6 +855,15 @@ function parseWalRecord(line: string): WalRecord | undefined {
   }
 }
 
+function findLastNonEmptyLineIndex(lines: readonly string[]): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].trim()) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 function applyWalRecord(
   history: OnlineViewerHistory,
   anchorNames: Record<string, string>,
@@ -629,6 +875,53 @@ function applyWalRecord(
   if (anchorName) {
     anchorNames[roomId] = anchorName;
   }
+}
+
+function summarizeLiveSessions(roomId: string, points: readonly OnlineViewerHistoryPoint[]): LiveSessionSummary[] {
+  const sessions: LiveSessionSummary[] = [];
+  let current: {
+    startMs: number;
+    endMs: number;
+    peakOnline: number;
+    sampleCount: number;
+    validSampleCount: number;
+  } | undefined;
+
+  for (const [timestampMs, online] of points) {
+    if (typeof online === 'number' && online > 0) {
+      if (!current) {
+        current = {
+          startMs: timestampMs,
+          endMs: timestampMs,
+          peakOnline: online,
+          sampleCount: 1,
+          validSampleCount: 1
+        };
+      } else {
+        current.endMs = timestampMs;
+        current.peakOnline = Math.max(current.peakOnline, online);
+        current.sampleCount += 1;
+        current.validSampleCount += 1;
+      }
+      continue;
+    }
+
+    if (online === null && current) {
+      current.sampleCount += 1;
+      continue;
+    }
+
+    if (online === 0 && current) {
+      sessions.push(createLiveSessionSummary(roomId, current));
+      current = undefined;
+    }
+  }
+
+  if (current) {
+    sessions.push(createLiveSessionSummary(roomId, current));
+  }
+
+  return sessions.sort((left, right) => right.endMs - left.endMs);
 }
 
 function createLiveSessionSummary(

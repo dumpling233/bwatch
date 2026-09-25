@@ -111,6 +111,29 @@ export interface MonitorSnapshot {
   message?: string;
   revision?: number;
 }
+export interface MonitorHistoryPatch {
+  append?: OnlineViewerHistory;
+  replace?: OnlineViewerHistory;
+  removeRoomIds?: string[];
+}
+
+export interface MonitorSnapshotPatch {
+  rooms?: LiveRoomStatus[];
+  settings?: MonitorSettings;
+  loading?: boolean;
+  lastRefreshAt?: number | null;
+  lastRefreshText?: string;
+  onlineHistory?: MonitorHistoryPatch;
+  message?: string | null;
+}
+
+export interface MonitorSnapshotEnvelope {
+  mode: 'full' | 'patch';
+  revision: number;
+  baseRevision?: number;
+  snapshot?: MonitorSnapshot & { lastRefreshText: string };
+  patch?: MonitorSnapshotPatch;
+}
 export interface LiveSessionSummary {
   roomId: string;
   startMs: number;
